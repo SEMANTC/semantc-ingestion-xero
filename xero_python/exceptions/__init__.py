@@ -155,3 +155,19 @@ def render_path(path_to_item):
         else:
             result += "['{0}']".format(pth)
     return result
+
+class SecretManagerError(Exception):
+    """Exception raised for errors accessing Google Secret Manager."""
+    pass
+
+class TokenRetrievalError(Exception):
+    """Exception raised for errors retrieving tokens."""
+    pass
+
+class OAuth2TokenGetterError(Exception):
+    """Exception raised when OAuth2 token getter fails."""
+    pass
+
+class OAuth2TokenSaverError(Exception):
+    """Exception raised when OAuth2 token saver fails."""
+    pass

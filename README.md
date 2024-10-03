@@ -1,3 +1,14 @@
+# Build
+docker build -t xero-ingestion:latest .
+
+# Run
+docker run \
+  -e TENANT_ID="your-tenant-id" \
+  -e PROJECT_ID="semantc-dev" \
+  -e GOOGLE_APPLICATION_CREDENTIALS="/app/service_account.json" \
+  -v "$(pwd)/service_account.json:/app/service_account.json:ro" \
+  xero-ingestion:latest
+
 # xero-python
 [![PyPI version](https://badge.fury.io/py/xero-python.svg)](https://badge.fury.io/py/xero-python)
 [![Github forks](https://img.shields.io/github/forks/XeroAPI/xero-python.svg)](https://github.com/XeroAPI/xero-python/network)

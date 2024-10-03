@@ -43,3 +43,18 @@ def get_nested_list(value, path, *paths, default=None):
         return get_nested(value, *paths, default=default)
 
     return value
+
+
+
+
+import logging
+
+def get_logger(name=__name__) -> logging.Logger:
+    logger = logging.getLogger(name)
+    if not logger.hasHandlers():
+        logger.setLevel(logging.DEBUG)  # Adjust as needed
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+    return logger
