@@ -7,7 +7,12 @@ from threading import Lock
 from google.cloud import secretmanager
 from requests_oauthlib import OAuth2Session
 
-from xero_python.exceptions import SecretManagerError, TokenRetrievalError
+from xero_python.exceptions import (
+    SecretManagerError,
+    TokenRetrievalError,
+    OAuth2TokenGetterError,
+    OAuth2TokenSaverError
+)
 
 # Corrected import path for get_logger
 from xero_python.utils import get_logger
@@ -23,14 +28,13 @@ class TokenManager:
     """
     def __init__(self):
         self.project_id = os.getenv("PROJECT_ID")
-        self.client_id_env = os.getenv("CLIENT_ID")  # Renamed to avoid confusion
-        print(f"CLIENT_ID from environment: {self.client_id_env}")  # Enhanced print statement
-        if not self.project_id or not self.client_id_env:
+        self.api_client = os.getenv("CLIENT_ID")
+        if not self.project_id or not self.api_client:
             raise ValueError("PROJECT_ID and CLIENT_ID environment variables must be set.")
         self.lock = Lock()
         self.token_cache = {}
         # Use separate variables to avoid overwriting
-        self.app_id, self.client_secret = self.get_app_credentials()
+        self.app_id, self.app_secret = self.get_app_credentials()
 
     def get_secret(self, secret_id: str) -> str:
         try:
@@ -50,7 +54,7 @@ class TokenManager:
 
     def retrieve_tokens(self) -> dict:
         try:
-            secret_id = f"client-{self.client_id_env}-token-xero"  # Use client_id_env
+            secret_id = f"client-{self.api_client}-token-xero"  # Use api_client
             logger.debug(f"Accessing secret_id: {secret_id}")  # Corrected logging statement
             tokens_json = self.get_secret(secret_id)
             tokens = json.loads(tokens_json)
@@ -68,7 +72,7 @@ class TokenManager:
 
     def store_tokens(self, tokens: dict):
         try:
-            secret_id = f"client-{self.client_id_env}-token-xero"  # Use client_id_env
+            secret_id = f"client-{self.api_client}-token-xero"  # Use api_client
             parent = f"projects/{self.project_id}/secrets/{secret_id}"
             payload = json.dumps(tokens).encode("UTF-8")
             client.add_secret_version(parent=parent, payload={"data": payload})
@@ -88,7 +92,7 @@ class TokenManager:
             })
             new_tokens = oauth.refresh_token(
                 'https://identity.xero.com/connect/token',
-                client_secret=self.client_secret
+                client_secret=self.app_secret
             )
             new_tokens['expires_at'] = time.time() + new_tokens.get('expires_in', 1800)
             return new_tokens
@@ -98,7 +102,7 @@ class TokenManager:
 
     def get_token(self) -> dict:
         with self.lock:
-            cached = self.token_cache.get(self.client_id_env)
+            cached = self.token_cache.get(self.api_client)
             if cached and cached.get('expires_at', 0) > time.time():
                 logger.debug("Using cached token")
                 return cached
@@ -106,13 +110,13 @@ class TokenManager:
             if tokens.get('expires_at', 0) < time.time():
                 tokens = self.refresh_access_token(tokens.get('refresh_token'))
                 self.store_tokens(tokens)
-            self.token_cache[self.client_id_env] = tokens
+            self.token_cache[self.api_client] = tokens
             return tokens
 
     def save_token(self, token: dict):
         with self.lock:
             self.store_tokens(token)
-            self.token_cache[self.client_id_env] = token
+            self.token_cache[self.api_client] = token
             logger.debug("Saved new token")
 
 # Initialize TokenManager
