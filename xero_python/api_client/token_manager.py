@@ -24,7 +24,7 @@ client = secretmanager.SecretManagerServiceClient()
 
 class TokenManager:
     """
-    Manages OAuth2 tokens using Google Secret Manager.
+    manages OAuth2 tokens using Google Secret Manager
     """
     def __init__(self):
         self.project_id = os.getenv("PROJECT_ID")
@@ -92,17 +92,18 @@ class TokenManager:
             })
             new_tokens = oauth.refresh_token(
                 'https://identity.xero.com/connect/token',
+                client_id=self.app_id,
                 client_secret=self.app_secret
             )
             new_tokens['expires_at'] = time.time() + new_tokens.get('expires_in', 1800)
             return new_tokens
         except Exception as e:
             logger.error(f"Token refresh failed: {e}")
-            raise
+            raise TokenRetrievalError(f"Token refresh failed: {e}")
 
     def get_token(self) -> dict:
         with self.lock:
-            cached = self.token_cache.get(self.api_client)
+            cached = self.token_cache.get(self.app_id)
             if cached and cached.get('expires_at', 0) > time.time():
                 logger.debug("Using cached token")
                 return cached
@@ -110,7 +111,7 @@ class TokenManager:
             if tokens.get('expires_at', 0) < time.time():
                 tokens = self.refresh_access_token(tokens.get('refresh_token'))
                 self.store_tokens(tokens)
-            self.token_cache[self.api_client] = tokens
+            self.token_cache[self.app_id] = tokens
             return tokens
 
     def save_token(self, token: dict):
