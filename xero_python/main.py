@@ -34,7 +34,7 @@ def main():
         accounting_api = AccountingApi(api_client=api_client)
 
         # Retrieve tenant_id from environment variables
-        tenant_id = os.getenv("CLIENT_ID")
+        tenant_id = os.getenv("TENANT_ID")
         if not tenant_id:
             raise ValueError("TENANT_ID environment variable must be set.")
 

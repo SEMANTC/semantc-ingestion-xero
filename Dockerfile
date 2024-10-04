@@ -34,7 +34,7 @@ RUN adduser --disabled-password appuser && \
 USER appuser
 
 # Set environment variables (to be overridden at runtime)
-ENV CLIENT_ID=""
+ENV TENANT_ID=""
 ENV PROJECT_ID=""
 ENV GOOGLE_APPLICATION_CREDENTIALS="/app/service_account.json"
 

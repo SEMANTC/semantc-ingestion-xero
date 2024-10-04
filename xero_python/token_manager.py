@@ -27,9 +27,9 @@ class TokenManager:
     """
     def __init__(self):
         self.project_id = os.getenv("PROJECT_ID")
-        self.api_client = os.getenv("CLIENT_ID")
+        self.api_client = os.getenv("TENANT_ID")
         if not self.project_id or not self.api_client:
-            raise ValueError("PROJECT_ID and CLIENT_ID environment variables must be set.")
+            raise ValueError("PROJECT_ID and TENANT_ID environment variables must be set.")
         self.lock = Lock()
         self.token_cache = {}
         # Retrieve application credentials
