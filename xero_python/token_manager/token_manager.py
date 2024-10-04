@@ -37,7 +37,6 @@ class TokenManager:
             name = f"projects/{self.project_id}/secrets/{secret_id}/versions/latest"
             response = client.access_secret_version(name=name)
             secret = response.payload.data.decode('UTF-8')
-            logger.debug(f"retrieved secret '{secret_id}'")
             return secret
         except Exception as e:
             logger.error(f"failed to access secret '{secret_id}': {e}")
@@ -51,10 +50,8 @@ class TokenManager:
     def retrieve_tokens(self) -> dict:
         try:
             secret_id = f"client-{self.tenant_id}-token-xero"
-            logger.debug(f"accessing secret_id: {secret_id}")
             tokens_json = self.get_secret(secret_id)
             tokens = json.loads(tokens_json)
-            print(tokens)
             required = {'access_token', 'refresh_token', 'expires_in', 'token_type', 'scope'}
             if not required.issubset(tokens.keys()):
                 logger.error("incomplete token data")

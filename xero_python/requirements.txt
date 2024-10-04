@@ -1,8 +1,11 @@
-google.auth
-google-cloud-secret-manager
 requests-oauthlib
 requests
 pydantic
 python-dateutil
 urllib3
 PyJWT
+
+google.auth
+google-cloud-secret-manager
+google-cloud-storage
+ratelimit
