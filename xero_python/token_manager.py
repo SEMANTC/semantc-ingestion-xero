@@ -14,7 +14,6 @@ from xero_python.exceptions import (
     OAuth2TokenSaverError
 )
 
-# Corrected import path for get_logger
 from xero_python.utils import get_logger
 
 logger = get_logger()
@@ -24,7 +23,7 @@ client = secretmanager.SecretManagerServiceClient()
 
 class TokenManager:
     """
-    manages OAuth2 tokens using Google Secret Manager
+    Manages OAuth2 tokens using Google Secret Manager.
     """
     def __init__(self):
         self.project_id = os.getenv("PROJECT_ID")
@@ -33,7 +32,7 @@ class TokenManager:
             raise ValueError("PROJECT_ID and CLIENT_ID environment variables must be set.")
         self.lock = Lock()
         self.token_cache = {}
-        # Use separate variables to avoid overwriting
+        # Retrieve application credentials
         self.app_id, self.app_secret = self.get_app_credentials()
 
     def get_secret(self, secret_id: str) -> str:
@@ -54,8 +53,8 @@ class TokenManager:
 
     def retrieve_tokens(self) -> dict:
         try:
-            secret_id = f"client-{self.api_client}-token-xero"  # Use api_client
-            logger.debug(f"Accessing secret_id: {secret_id}")  # Corrected logging statement
+            secret_id = f"client-{self.api_client}-token-xero"
+            logger.debug(f"Accessing secret_id: {secret_id}")
             tokens_json = self.get_secret(secret_id)
             tokens = json.loads(tokens_json)
             required = {'access_token', 'refresh_token', 'expires_in', 'token_type', 'scope'}
@@ -68,20 +67,23 @@ class TokenManager:
             return tokens
         except Exception as e:
             logger.error(f"Error retrieving tokens: {e}")
-            raise
+            raise TokenRetrievalError(f"Error retrieving tokens: {e}") from e
 
     def store_tokens(self, tokens: dict):
         try:
-            secret_id = f"client-{self.api_client}-token-xero"  # Use api_client
+            secret_id = f"client-{self.api_client}-token-xero"
             parent = f"projects/{self.project_id}/secrets/{secret_id}"
             payload = json.dumps(tokens).encode("UTF-8")
             client.add_secret_version(parent=parent, payload={"data": payload})
             logger.info("Stored refreshed tokens")
         except Exception as e:
             logger.error(f"Error storing tokens: {e}")
-            raise SecretManagerError("Failed to store tokens") from e
+            raise SecretManagerError(f"Failed to store tokens: {e}") from e
 
     def refresh_access_token(self, refresh_token: str) -> dict:
+        """
+        Refreshes the OAuth2 access token using the refresh token.
+        """
         if not refresh_token:
             logger.error("No refresh token available")
             raise TokenRetrievalError("Missing refresh token")
@@ -99,7 +101,7 @@ class TokenManager:
             return new_tokens
         except Exception as e:
             logger.error(f"Token refresh failed: {e}")
-            raise TokenRetrievalError(f"Token refresh failed: {e}")
+            raise TokenRetrievalError(f"Token refresh failed: {e}") from e
 
     def get_token(self) -> dict:
         with self.lock:
@@ -117,7 +119,7 @@ class TokenManager:
     def save_token(self, token: dict):
         with self.lock:
             self.store_tokens(token)
-            self.token_cache[self.api_client] = token
+            self.token_cache[self.app_id] = token
             logger.debug("Saved new token")
 
 # Initialize TokenManager
