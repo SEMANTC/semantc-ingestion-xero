@@ -1,34 +1,41 @@
-# xero_python/main.py
-
 import os
-import json
-import time
 from xero_python.accounting import AccountingApi
 from xero_python.api_client import ApiClient, Configuration
 from xero_python.api_client.oauth2 import OAuth2Token
-from xero_python.token_manager import oauth2_token_getter, oauth2_token_saver
-from xero_python.exceptions import OAuth2TokenGetterError, OAuth2TokenSaverError
+from xero_python.token_manager.token_manager import token_manager, oauth2_token_getter, oauth2_token_saver
+from xero_python.exceptions import OAuth2TokenGetterError, OAuth2TokenSaverError, TokenRetrievalError
 
 def main():
     try:
-        # Initialize Configuration without setting OAuth2Token initially
+        # Get client credentials from TokenManager
+        client_id, client_secret = token_manager.app_id, token_manager.app_secret
+
+        # Initialize Configuration
         configuration = Configuration()
 
-        # Initialize OAuth2Token with token getter and saver callbacks
+        # Get the current token
+        token = oauth2_token_getter()
+
+        # Initialize OAuth2Token
         oauth2_token = OAuth2Token(
-            token_getter=oauth2_token_getter,
-            token_saver=oauth2_token_saver
+            client_id=client_id,
+            client_secret=client_secret
         )
+
+        # Update the OAuth2Token with the retrieved token
+        oauth2_token.update_token(**token)
 
         # Assign the OAuth2Token to the configuration
         configuration.oauth2_token = oauth2_token
 
         # Initialize ApiClient with the configured Configuration
         api_client = ApiClient(
-            configuration=configuration,
-            oauth2_token_getter=oauth2_token_getter,
-            oauth2_token_saver=oauth2_token_saver
+            configuration=configuration
         )
+
+        # Register token getter and saver callbacks
+        api_client.oauth2_token_getter(oauth2_token_getter)
+        api_client.oauth2_token_saver(oauth2_token_saver)
 
         # Initialize AccountingApi with the configured ApiClient
         accounting_api = AccountingApi(api_client=api_client)
@@ -48,10 +55,13 @@ def main():
 
     except OAuth2TokenGetterError as e:
         print(f"Error getting token: {e}")
+        print("Please ensure that your Xero app credentials are correct and that you have the necessary permissions.")
     except OAuth2TokenSaverError as e:
         print(f"Error saving token: {e}")
     except Exception as e:
         print(f"Error: {e}")
+        if hasattr(e, 'body'):
+            print(f"Response body: {e.body}")
 
 if __name__ == "__main__":
     main()
