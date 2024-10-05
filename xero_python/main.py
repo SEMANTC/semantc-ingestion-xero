@@ -86,7 +86,7 @@ def main():
         # initialize TokenManager and get token
         token_manager = TokenManager()
         token = token_manager.get_token()
-        logger.debug(f"Initial token: access_token={token['access_token'][:4]}..., expires_at={token['expires_at']}")
+        logger.debug(f"initial token: access_token={token['access_token'][:4]}..., expires_at={token['expires_at']}")
 
         # initialize Configuration and OAuth2Token
         configuration = Configuration()
@@ -175,8 +175,8 @@ def main():
                     successful_endpoints[api_call] = {}  # Add to successful endpoints
                     break  # success, exit the retry loop
                 except ApiException as e:
-                    if e.status == 401 and 'TokenExpired' in e.body.decode('utf-8'):
-                        logger.warning(f"Unauthorized error for {api_call}, attempting to refresh token.")
+                    if e.status == 401 and 'tokenexpired' in e.body.decode('utf-8'):
+                        logger.warning(f"unauthorized error for {api_call}, attempting to refresh token.")
                         try:
                             # Force TokenManager to refresh token
                             new_tokens = token_manager.refresh_token(token['refresh_token'], token['scope'])
@@ -186,9 +186,9 @@ def main():
                             configuration.oauth2_token = oauth2_token
                             token = new_tokens
                             attempt += 1
-                            logger.info(f"Token refreshed. Retrying {api_call} (Attempt {attempt}/{max_attempts})")
+                            logger.info(f"token refreshed... retrying {api_call} (Attempt {attempt}/{max_attempts})")
                         except Exception as refresh_e:
-                            logger.error(f"Failed to refresh token for {api_call}: {refresh_e}")
+                            logger.error(f"failed to refresh token for {api_call}: {refresh_e}")
                             failed_calls.append((api_call, str(e)))
                             break  # Stop retrying this API call
                     else:
