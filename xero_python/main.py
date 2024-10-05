@@ -35,6 +35,8 @@ def save_to_gcs(data, endpoint_name):
     write_json_to_gcs(bucket_name, file_name, json_content)
 
 def main():
+    failed_calls = []
+
     try:
         # Initialize TokenManager and get token
         token_manager = TokenManager()
@@ -140,11 +142,18 @@ def main():
                             attempt += 1
                             logger.info(f"Token refreshed. Retrying {api_call} (Attempt {attempt}/{max_attempts})")
                         except Exception as refresh_e:
-                            logger.error(f"Failed to refresh token: {refresh_e}")
-                            raise OAuth2TokenGetterError("Failed to refresh token") from refresh_e
+                            logger.error(f"Failed to refresh token for {api_call}: {refresh_e}")
+                            failed_calls.append((api_call, str(e)))
+                            break  # Stop retrying this API call
                     else:
                         logger.error(f"Error in {api_call}: {str(e)}")
-                        raise e
+                        failed_calls.append((api_call, str(e)))
+                        break  # Stop retrying this API call
+                except Exception as e:
+                    logger.error(f"Unexpected error in {api_call}: {str(e)}")
+                    failed_calls.append((api_call, str(e)))
+                    break  # Stop retrying this API call
+
     except OAuth2TokenGetterError as e:
         logger.error(f"Error getting token: {e}")
     except OAuth2TokenSaverError as e:
@@ -153,6 +162,13 @@ def main():
         logger.error(f"Error: {e}")
         if hasattr(e, 'body'):
             logger.error(f"Response body: {e.body}")
+    finally:
+        if failed_calls:
+            logger.warning(f"Completed with failures in {len(failed_calls)} API calls:")
+            for call, error in failed_calls:
+                logger.warning(f"- {call}: {error}")
+        else:
+            logger.info("All API calls completed successfully.")
 
 if __name__ == "__main__":
     main()
