@@ -30,7 +30,7 @@ def save_to_gcs(data, endpoint_name):
     if not bucket_name:
         raise ValueError("GCS_BUCKET_NAME environment variable must be set.")
     
-    file_name = f"xero_{endpoint_name}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
+    file_name = f"xero_{endpoint_name}.json"
     json_content = json.dumps(data, default=str, indent=2)
     write_json_to_gcs(bucket_name, file_name, json_content)
 
