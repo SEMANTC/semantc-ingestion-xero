@@ -1,27 +1,20 @@
 import os
 from google.cloud import bigquery
 from google.cloud import storage
-import json
-import io
-import datetime
-from typing import List, Dict, Any
-from utils import get_logger
+from xero_python.utils import get_logger
 
 logger = get_logger()
 
-# initialize clients once
 bigquery_client = bigquery.Client(project=os.getenv("PROJECT_ID"))
-storage_client = storage.Client()
 
 project_id = os.getenv("PROJECT_ID")
 tenant_id = os.getenv("TENANT_ID")
 
 formatted_tenant_id = tenant_id.replace("-", "_")
-
 bucket_name = f"tenant-{tenant_id}-bucket-xero"
 dataset_id = f"tenant_{formatted_tenant_id}_raw"
 
-def create_external_table(endpoints: str) -> None:
+def create_external_table(endpoints: dict) -> None:
     try:
         bigquery_client.get_dataset(dataset_id)
     except Exception as e:
@@ -31,9 +24,10 @@ def create_external_table(endpoints: str) -> None:
     for endpoint in endpoints.keys():
         table_id = f"{dataset_id}.xero_{endpoint}"
 
-        # define table schema
+        # define external table schema with payload as JSON and ingestion_time
         schema = [
-            bigquery.SchemaField("ingestion_time", "TIMESTAMP", mode="REQUIRED")
+            bigquery.SchemaField("payload", "JSON", mode="NULLABLE"),
+            bigquery.SchemaField("ingestion_time", "TIMESTAMP", mode="REQUIRED"),
         ]
 
         table_ref = bigquery_client.dataset(dataset_id).table(f"xero_{endpoint}")
@@ -42,7 +36,7 @@ def create_external_table(endpoints: str) -> None:
         try:
             table = bigquery.Table(table_ref, schema=schema)
             table = bigquery_client.create_table(table, exists_ok=True)
-            # logger.info(f"{table_id} exists")
+            logger.info(f"{table_id} exists")
         except Exception as e:
             logger.error(f"error creating table {table_id}: {str(e)}")
             continue
