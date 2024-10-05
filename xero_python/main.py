@@ -13,6 +13,7 @@ from xero_python.exceptions import (
 )
 from xero_python.utils import get_logger
 from storage import write_json_to_gcs
+from external_tables import create_external_table
 
 logger = get_logger()
 
@@ -25,17 +26,13 @@ def rate_limited_api_call(func, *args, **kwargs):
     return func(*args, **kwargs)
 
 def save_to_gcs(data, endpoint_name):
-    bucket_name = os.getenv("GCS_BUCKET_NAME")
-    bucket_name = "client-7a94e511-25e3-4b98-978c-2c910a779ade-bucket-xero"
-    if not bucket_name:
-        raise ValueError("GCS_BUCKET_NAME environment variable must be set.")
-    
     file_name = f"xero_{endpoint_name}.json"
     json_content = json.dumps(data, default=str, indent=2)
-    write_json_to_gcs(bucket_name, file_name, json_content)
+    write_json_to_gcs(file_name, json_content)
 
 def main():
     failed_calls = []
+    successful_endpoints = {}
 
     try:
         # Initialize TokenManager and get token
@@ -67,43 +64,43 @@ def main():
         # List of API calls to make
         api_calls = [
             ('get_accounts', {}),
-            ('get_bank_transactions', {}),
-            ('get_bank_transfers', {}),
-            ('get_batch_payments', {}),
-            ('get_branding_themes', {}),
-            ('get_budgets', {}),
-            ('get_contact_groups', {}),
-            ('get_contacts', {}),
-            ('get_credit_notes', {}),
-            ('get_currencies', {}),
-            ('get_employees', {}),
-            ('get_expense_claims', {}),
-            ('get_invoice_reminders', {}),
-            ('get_invoices', {}),
-            ('get_items', {}),
-            ('get_journals', {}),
-            ('get_linked_transactions', {}),
-            ('get_manual_journals', {}),
-            ('get_organisation_actions', {}),
-            ('get_organisations', {}),
-            ('get_overpayments', {}),
-            ('get_payment_services', {}),
-            ('get_payments', {}),
-            ('get_prepayments', {}),
-            ('get_purchase_orders', {}),
-            ('get_quotes', {}),
-            ('get_receipts', {}),
-            ('get_repeating_invoices', {}),
-            ('get_report_balance_sheet', {}),
-            ('get_report_bank_summary', {}),
-            ('get_report_budget_summary', {}),
-            ('get_report_executive_summary', {}),
-            ('get_report_profit_and_loss', {}),
-            ('get_report_trial_balance', {}),
-            ('get_reports_list', {}),
-            ('get_tax_rates', {}),
-            ('get_tracking_categories', {}),
-            ('get_users', {})
+            # ('get_bank_transactions', {}),
+            # ('get_bank_transfers', {}),
+            # ('get_batch_payments', {}),
+            # ('get_branding_themes', {}),
+            # ('get_budgets', {}),
+            # ('get_contact_groups', {}),
+            # ('get_contacts', {}),
+            # ('get_credit_notes', {}),
+            # ('get_currencies', {}),
+            # ('get_employees', {}),
+            # ('get_expense_claims', {}),
+            # ('get_invoice_reminders', {}),
+            # ('get_invoices', {}),
+            # ('get_items', {}),
+            # ('get_journals', {}),
+            # ('get_linked_transactions', {}),
+            # ('get_manual_journals', {}),
+            # ('get_organisation_actions', {}),
+            # ('get_organisations', {}),
+            # ('get_overpayments', {}),
+            # ('get_payment_services', {}),
+            # ('get_payments', {}),
+            # ('get_prepayments', {}),
+            # ('get_purchase_orders', {}),
+            # ('get_quotes', {}),
+            # ('get_receipts', {}),
+            # ('get_repeating_invoices', {}),
+            # ('get_report_balance_sheet', {}),
+            # ('get_report_bank_summary', {}),
+            # ('get_report_budget_summary', {}),
+            # ('get_report_executive_summary', {}),
+            # ('get_report_profit_and_loss', {}),
+            # ('get_report_trial_balance', {}),
+            # ('get_reports_list', {}),
+            # ('get_tax_rates', {}),
+            # ('get_tracking_categories', {}),
+            # ('get_users', {})
         ]
 
         # Make API calls and save results
@@ -120,17 +117,18 @@ def main():
                     if not isinstance(result, dict):
                         result = result.to_dict()
                     
-                    # Add ingestion time
+                    # add ingestion time
                     result['ingestion_time'] = datetime.utcnow().isoformat()
                     
-                    # Save to GCS
+                    # save to GCS
                     save_to_gcs(result, api_call)
                     
-                    logger.info(f"Successfully processed and saved data from {api_call}")
+                    logger.info(f"successfully processed and saved data from {api_call}")
+                    successful_endpoints[api_call] = {}  # Add to successful endpoints
                     break  # success, exit the retry loop
                 except ApiException as e:
                     if e.status == 401 and 'TokenExpired' in e.body.decode('utf-8'):
-                        logger.warning(f"Unauthorized error for {api_call}, attempting to refresh token.")
+                        logger.warning(f"unauthorized error for {api_call}, attempting to refresh token.")
                         try:
                             # Force TokenManager to refresh token
                             new_tokens = token_manager.refresh_token(token['refresh_token'], token['scope'])
@@ -140,35 +138,39 @@ def main():
                             configuration.oauth2_token = oauth2_token
                             token = new_tokens
                             attempt += 1
-                            logger.info(f"Token refreshed. Retrying {api_call} (Attempt {attempt}/{max_attempts})")
+                            logger.info(f"token refreshed. Retrying {api_call} (Attempt {attempt}/{max_attempts})")
                         except Exception as refresh_e:
-                            logger.error(f"Failed to refresh token for {api_call}: {refresh_e}")
+                            logger.error(f"failed to refresh token for {api_call}: {refresh_e}")
                             failed_calls.append((api_call, str(e)))
                             break  # Stop retrying this API call
                     else:
-                        logger.error(f"Error in {api_call}: {str(e)}")
+                        logger.error(f"error in {api_call}: {str(e)}")
                         failed_calls.append((api_call, str(e)))
                         break  # Stop retrying this API call
                 except Exception as e:
-                    logger.error(f"Unexpected error in {api_call}: {str(e)}")
+                    logger.error(f"unexpected error in {api_call}: {str(e)}")
                     failed_calls.append((api_call, str(e)))
                     break  # Stop retrying this API call
 
+        # After all API calls, load data to BigQuery
+        if successful_endpoints:
+            create_external_table(successful_endpoints)
+
     except OAuth2TokenGetterError as e:
-        logger.error(f"Error getting token: {e}")
+        logger.error(f"error getting token: {e}")
     except OAuth2TokenSaverError as e:
-        logger.error(f"Error saving token: {e}")
+        logger.error(f"error saving token: {e}")
     except Exception as e:
-        logger.error(f"Error: {e}")
+        logger.error(f"error: {e}")
         if hasattr(e, 'body'):
-            logger.error(f"Response body: {e.body}")
+            logger.error(f"response body: {e.body}")
     finally:
         if failed_calls:
-            logger.warning(f"Completed with failures in {len(failed_calls)} API calls:")
+            logger.warning(f"completed with failures in {len(failed_calls)} API calls:")
             for call, error in failed_calls:
                 logger.warning(f"- {call}: {error}")
         else:
-            logger.info("All API calls completed successfully.")
+            logger.info("all api calls completed successfully")
 
 if __name__ == "__main__":
     main()

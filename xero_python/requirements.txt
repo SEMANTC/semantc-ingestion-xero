@@ -4,8 +4,9 @@ pydantic
 python-dateutil
 urllib3
 PyJWT
+ratelimit
 
 google.auth
 google-cloud-secret-manager
 google-cloud-storage
-ratelimit
+google-cloud-bigquery
