@@ -32,29 +32,21 @@ def create_external_table(endpoints: dict) -> None:
 
         table_ref = bigquery_client.dataset(dataset_id).table(f"xero_{endpoint}")
 
-        # create or ensure table exists
+        # create external table configuration
+        external_config = bigquery.ExternalConfig("NEWLINE_DELIMITED_JSON")
+        external_config.source_uris = [f"gs://{bucket_name}/xero_{endpoint}.json"]
+        external_config.schema = schema
+        external_config.ignore_unknown_values = True
+        external_config.max_bad_records = 0
+
+        # create or ensure external table exists
         try:
             table = bigquery.Table(table_ref, schema=schema)
+            table.external_data_configuration = external_config
             table = bigquery_client.create_table(table, exists_ok=True)
-            logger.info(f"{table_id} exists")
+            logger.info(f"external table {table_id} created or updated")
         except Exception as e:
-            logger.error(f"error creating table {table_id}: {str(e)}")
+            logger.error(f"error creating external table {table_id}: {str(e)}")
             continue
 
-        # load data from GCS to BigQuery
-        try:
-            uri = f"gs://{bucket_name}/xero_{endpoint}.json"
-            job_config = bigquery.LoadJobConfig(
-                schema=schema,
-                source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
-                write_disposition=bigquery.WriteDisposition.WRITE_APPEND
-            )
-            load_job = bigquery_client.load_table_from_uri(
-                uri,
-                table_ref,
-                job_config=job_config
-            )
-            load_job.result()  # wait for the job to complete
-            logger.info(f"loaded data into {table_id} from {uri}")
-        except Exception as e:
-            logger.error(f"error loading data into {table_id} from {uri}: {str(e)}")
+        logger.info(f"external table {table_id} is set up to read from {external_config.source_uris[0]}")

@@ -159,8 +159,8 @@ class TokenManager:
                 except Exception as e:
                     logger.error(f"failed to refresh token: {e}")
                     raise TokenRetrievalError("token expired and refresh failed. Manual reauthorization may be required.")
-            else:
-                logger.debug("token is still valid.")
+            # else:
+            #     logger.debug("token is still valid.")
             return tokens
 
 def oauth2_token_getter():

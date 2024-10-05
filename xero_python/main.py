@@ -101,15 +101,15 @@ def main():
         api_client = ApiClient(configuration=configuration)
         api_client.oauth2_token_getter(oauth2_token_getter)
 
-        # Initialize AccountingApi
+        # initialize AccountingApi
         accounting_api = AccountingApi(api_client=api_client)
 
-        # Retrieve tenant_id
+        # retrieve tenant_id
         tenant_id = os.getenv("TENANT_ID")
         if not tenant_id:
             raise ValueError("TENANT_ID environment variable must be set.")
 
-        # List of API calls to make
+        # list of API calls to make
         api_calls = [
             ('get_accounts', {}),
             ('get_bank_transactions', {}),
@@ -169,20 +169,21 @@ def main():
                     result['ingestion_time'] = datetime.utcnow().isoformat()
 
                     # save to GCS in NDJSON format
-                    save_to_gcs(result, api_call)
+                    endpoint_name = api_call.replace("get_", "") 
+                    save_to_gcs(result, endpoint_name)
 
-                    logger.info(f"Successfully processed and saved data from {api_call}")
-                    successful_endpoints[api_call] = {}  # Add to successful endpoints
+                    logger.info(f"successfully processed and saved data from {api_call}")
+                    successful_endpoints[endpoint_name] = {}  # Add to successful endpoints
                     break  # success, exit the retry loop
                 except ApiException as e:
                     if e.status == 401 and 'tokenexpired' in e.body.decode('utf-8'):
                         logger.warning(f"unauthorized error for {api_call}, attempting to refresh token.")
                         try:
-                            # Force TokenManager to refresh token
+                            # force TokenManager to refresh token
                             new_tokens = token_manager.refresh_token(token['refresh_token'], token['scope'])
                             # Update OAuth2Token with new token
                             oauth2_token.update_token(**new_tokens)
-                            # Update the ApiClient with new token
+                            # update the ApiClient with new token
                             configuration.oauth2_token = oauth2_token
                             token = new_tokens
                             attempt += 1
@@ -190,17 +191,17 @@ def main():
                         except Exception as refresh_e:
                             logger.error(f"failed to refresh token for {api_call}: {refresh_e}")
                             failed_calls.append((api_call, str(e)))
-                            break  # Stop retrying this API call
+                            break  # stop retrying this API call
                     else:
                         logger.error(f"Error in {api_call}: {str(e)}")
                         failed_calls.append((api_call, str(e)))
-                        break  # Stop retrying this API call
+                        break  # stop retrying this API call
                 except Exception as e:
                     logger.error(f"Unexpected error in {api_call}: {str(e)}")
                     failed_calls.append((api_call, str(e)))
-                    break  # Stop retrying this API call
+                    break  # stop retrying this API call
 
-        # After all API calls, load data to BigQuery
+        # after all API calls, load data to BigQuery
         if successful_endpoints:
             create_external_table(successful_endpoints)
 
