@@ -1363,6 +1363,7 @@ class AccountingApi(object):
     def get_journals(
         self,
         xero_tenant_id,
+        page=empty,
         if_modified_since=empty,
         offset=empty,
         payments_only=empty,
@@ -1393,6 +1394,9 @@ class AccountingApi(object):
         path_params = {}
 
         query_params = []
+
+        if page is not empty:
+            query_params.append(("page", page))
 
         if offset is not empty:
             query_params.append(("offset", offset))

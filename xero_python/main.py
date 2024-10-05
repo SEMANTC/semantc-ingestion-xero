@@ -1,5 +1,3 @@
-# xero-python/main.py
-
 import os
 import json
 from datetime import datetime
@@ -7,8 +5,12 @@ from ratelimit import limits, sleep_and_retry
 from xero_python.accounting import AccountingApi
 from xero_python.api_client import ApiClient, Configuration
 from xero_python.api_client.oauth2 import OAuth2Token
-from xero_python.token_manager.token_manager import TokenManager, oauth2_token_getter, oauth2_token_saver
-from xero_python.exceptions import OAuth2TokenGetterError, OAuth2TokenSaverError
+from xero_python.token_manager.token_manager import TokenManager, oauth2_token_getter
+from xero_python.exceptions import (
+    OAuth2TokenGetterError,
+    OAuth2TokenSaverError,
+    ApiException
+)
 from xero_python.utils import get_logger
 from storage import write_json_to_gcs
 
@@ -34,21 +36,23 @@ def save_to_gcs(data, endpoint_name):
 
 def main():
     try:
-        # Initialize TokenManager and get credentials
+        # Initialize TokenManager and get token
         token_manager = TokenManager()
-        client_id, client_secret = token_manager.app_id, token_manager.app_secret
-
+        token = token_manager.get_token()
+        logger.debug(f"Initial token: access_token={token['access_token'][:4]}..., expires_at={token['expires_at']}")
+        
         # Initialize Configuration and OAuth2Token
         configuration = Configuration()
-        token = oauth2_token_getter()
-        oauth2_token = OAuth2Token(client_id=client_id, client_secret=client_secret)
+        oauth2_token = OAuth2Token(
+            client_id=token_manager.app_id,
+            client_secret=token_manager.app_secret
+        )
         oauth2_token.update_token(**token)
         configuration.oauth2_token = oauth2_token
 
         # Initialize ApiClient
         api_client = ApiClient(configuration=configuration)
         api_client.oauth2_token_getter(oauth2_token_getter)
-        api_client.oauth2_token_saver(oauth2_token_saver)
 
         # Initialize AccountingApi
         accounting_api = AccountingApi(api_client=api_client)
@@ -102,25 +106,45 @@ def main():
 
         # Make API calls and save results
         for api_call, params in api_calls:
-            try:
-                logger.info(f"Calling {api_call}")
-                func = getattr(accounting_api, api_call)
-                result = rate_limited_api_call(func, xero_tenant_id=tenant_id, **params)
-                
-                # Convert result to dict if it's not already
-                if not isinstance(result, dict):
-                    result = result.to_dict()
-                
-                # Add ingestion time
-                result['ingestion_time'] = datetime.utcnow().isoformat()
-                
-                # Save to GCS
-                save_to_gcs(result, api_call)
-                
-                logger.info(f"Successfully processed and saved data from {api_call}")
-            except Exception as e:
-                logger.error(f"Error in {api_call}: {str(e)}")
-
+            attempt = 0
+            max_attempts = 2
+            while attempt < max_attempts:
+                try:
+                    logger.info(f"Calling {api_call}")
+                    func = getattr(accounting_api, api_call)
+                    result = rate_limited_api_call(func, xero_tenant_id=tenant_id, **params)
+                    
+                    # Convert result to dict if it's not already
+                    if not isinstance(result, dict):
+                        result = result.to_dict()
+                    
+                    # Add ingestion time
+                    result['ingestion_time'] = datetime.utcnow().isoformat()
+                    
+                    # Save to GCS
+                    save_to_gcs(result, api_call)
+                    
+                    logger.info(f"Successfully processed and saved data from {api_call}")
+                    break  # success, exit the retry loop
+                except ApiException as e:
+                    if e.status == 401 and 'TokenExpired' in e.body.decode('utf-8'):
+                        logger.warning(f"Unauthorized error for {api_call}, attempting to refresh token.")
+                        try:
+                            # Force TokenManager to refresh token
+                            new_tokens = token_manager.refresh_token(token['refresh_token'], token['scope'])
+                            # Update OAuth2Token with new token
+                            oauth2_token.update_token(**new_tokens)
+                            # Update the ApiClient with new token
+                            configuration.oauth2_token = oauth2_token
+                            token = new_tokens
+                            attempt += 1
+                            logger.info(f"Token refreshed. Retrying {api_call} (Attempt {attempt}/{max_attempts})")
+                        except Exception as refresh_e:
+                            logger.error(f"Failed to refresh token: {refresh_e}")
+                            raise OAuth2TokenGetterError("Failed to refresh token") from refresh_e
+                    else:
+                        logger.error(f"Error in {api_call}: {str(e)}")
+                        raise e
     except OAuth2TokenGetterError as e:
         logger.error(f"Error getting token: {e}")
     except OAuth2TokenSaverError as e:
