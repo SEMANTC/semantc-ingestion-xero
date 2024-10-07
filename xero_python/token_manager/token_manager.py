@@ -50,7 +50,7 @@ class TokenManager:
 
     def retrieve_tokens(self) -> dict:
         try:
-            secret_id = f"client-{self.tenant_id}-token-xero"
+            secret_id = f"tenant-{self.tenant_id}-token-xero"
             tokens_json = self.get_secret(secret_id)
             tokens = json.loads(tokens_json)
             required = {'access_token', 'refresh_token', 'expires_in', 'token_type', 'scope'}
@@ -72,7 +72,7 @@ class TokenManager:
 
     def store_tokens(self, tokens: dict):
         try:
-            secret_id = f"client-{self.tenant_id}-token-xero"
+            secret_id = f"tenant-{self.tenant_id}-token-xero"
             parent = f"projects/{self.project_id}/secrets/{secret_id}"
             payload = json.dumps(tokens).encode("UTF-8")
             client.add_secret_version(parent=parent, payload={"data": payload})

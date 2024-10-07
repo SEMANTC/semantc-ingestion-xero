@@ -16,6 +16,9 @@ from xero_python.exceptions import (
 from storage import write_json_to_gcs
 from external_tables import create_external_table
 import logging
+import requests
+from google.auth import default
+from google.auth.transport.requests import AuthorizedSession
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +45,7 @@ def save_to_gcs(data, endpoint_name):
     converts API response data into NDJSON format and uploads to GCS
     each line contains a JSON object with 'payload' and 'ingestion_time'
     """
-    # identify the key that contains the list of items
+    # Identify the key that contains the list of items
     list_key = None
     for key, value in data.items():
         if isinstance(value, list):
@@ -50,7 +53,7 @@ def save_to_gcs(data, endpoint_name):
             break
 
     if not list_key:
-        logger.error(f"no list found in the response for endpoint {endpoint_name}... skipping")
+        logger.error(f"No list found in the response for endpoint {endpoint_name}... skipping")
         return
 
     items = data[list_key]
@@ -77,6 +80,33 @@ def save_to_gcs(data, endpoint_name):
     # save to GCS
     write_json_to_gcs(file_name, json_content)
     logger.info(f"saved xero_{endpoint_name}.json to gs://{os.getenv('GCS_BUCKET_NAME')}/{file_name}")
+
+def trigger_transformation_job():
+    """
+    triggers the data transformation Cloud Run job by making an authenticated HTTP POST request
+    """
+    transformation_job_uri = os.getenv("TRANSFORMATION_JOB_URI")
+    if not transformation_job_uri:
+        logger.error("TRANSFORMATION_JOB_URI environment variable is not set.")
+        return False
+
+    try:
+        # obtain default credentials
+        credentials, _ = default()
+        authed_session = AuthorizedSession(credentials)
+
+        # make the POST request to trigger the transformation job
+        response = authed_session.post(transformation_job_uri)
+
+        if response.status_code in [200, 202]:
+            logger.info("transformation job triggered successfully.")
+            return True
+        else:
+            logger.error(f"failed to trigger transformation job. Status Code: {response.status_code}, Response: {response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"exception occurred while triggering transformation job: {e}")
+        return False
 
 def main():
     failed_calls = []
@@ -181,7 +211,7 @@ def main():
                         try:
                             # force TokenManager to refresh token
                             new_tokens = token_manager.refresh_token(token['refresh_token'], token['scope'])
-                            # Update OAuth2Token with new token
+                            # update OAuth2Token with new token
                             oauth2_token.update_token(**new_tokens)
                             # update the ApiClient with new token
                             configuration.oauth2_token = oauth2_token
@@ -197,13 +227,21 @@ def main():
                         failed_calls.append((api_call, str(e)))
                         break  # stop retrying this API call
                 except Exception as e:
-                    logger.error(f"Unexpected error in {api_call}: {str(e)}")
+                    logger.error(f"unexpected error in {api_call}: {str(e)}")
                     failed_calls.append((api_call, str(e)))
                     break  # stop retrying this API call
 
         # after all API calls, load data to BigQuery
         if successful_endpoints:
             create_external_table(successful_endpoints)
+
+            # trigger the transformation job after successful ingestion
+            logger.info("triggering the data transformation job")
+            transformation_triggered = trigger_transformation_job()
+            if transformation_triggered:
+                logger.info("data transformation job has been triggered successfully")
+            else:
+                logger.error("failed to trigger the data transformation job")
 
     except OAuth2TokenGetterError as e:
         logger.error(f"error getting token: {e}")
