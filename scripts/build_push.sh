@@ -4,7 +4,7 @@
 set -e
 
 # Configuration
-PROJECT_ID="semantc-dev"
+PROJECT_ID="semantc-sandbox"
 REGION="us-central1"
 REPO="gcr.io"
 IMAGE_TAG="latest"
