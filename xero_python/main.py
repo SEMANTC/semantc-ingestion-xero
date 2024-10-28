@@ -53,7 +53,7 @@ def save_to_gcs(data, endpoint_name):
             break
 
     if not list_key:
-        logger.error(f"No list found in the response for endpoint {endpoint_name}... skipping")
+        logger.error(f"no list found in the response for endpoint {endpoint_name}... skipping")
         return
 
     items = data[list_key]
@@ -108,6 +108,83 @@ def trigger_transformation_job():
         logger.error(f"exception occurred while triggering transformation job: {e}")
         return False
 
+def get_paginated_data(accounting_api, api_call, tenant_id, params):
+    """
+    Helper function to handle pagination for supported endpoints
+    Returns combined results for paginated endpoints or single call results for non-paginated endpoints
+    """
+    # Define endpoints that support pagination and their specific parameters
+    paginated_endpoints = {
+        'get_bank_transactions': {'key': 'bank_transactions', 'params': ['page', 'page_size']},
+        'get_contacts': {'key': 'contacts', 'params': ['page', 'page_size']},
+        'get_credit_notes': {'key': 'credit_notes', 'params': ['page', 'page_size']},
+        'get_invoices': {'key': 'invoices', 'params': ['page', 'page_size']},
+        'get_linked_transactions': {'linked_transactions': 'linked', 'params': ['page', 'page_size']},
+        'get_manual_journals': {'key': 'manual_journals', 'params': ['page', 'page_size']},
+        'get_prepayments': {'key': 'prepayments', 'params': ['page', 'page_size']},
+        'get_payments': {'key': 'payments', 'params': ['page', 'page_size']},
+        'get_overpayments': {'key': 'overpayments', 'params': ['page', 'page_size']},
+        'get_quotes': {'key': 'quotes', 'params': ['page', 'page_size']},
+        'get_purchase_orders': {'key': 'purchase_orders', 'params': ['page', 'page_size']},
+        'get_journals': {'key': 'journals', 'params': ['offset']},  # journals uses offset instead
+    }
+    
+    if api_call not in paginated_endpoints:
+        # For non-paginated endpoints, just make a single call
+        func = getattr(accounting_api, api_call)
+        return rate_limited_api_call(func, xero_tenant_id=tenant_id, **params)
+        
+    # For paginated endpoints
+    endpoint_config = paginated_endpoints[api_call]
+    all_items = []
+    page = 1
+    page_size = 100  # Maximum page size
+    
+    while True:
+        # Prepare pagination parameters based on endpoint configuration
+        pagination_params = {}
+        if 'page' in endpoint_config['params']:
+            pagination_params['page'] = page
+        if 'page_size' in endpoint_config['params']:
+            pagination_params['page_size'] = page_size
+        if 'offset' in endpoint_config['params']:
+            pagination_params['offset'] = (page - 1) * page_size
+
+        # Combine with other parameters
+        call_params = {**params, **pagination_params}
+        
+        func = getattr(accounting_api, api_call)
+        result = rate_limited_api_call(
+            func, 
+            xero_tenant_id=tenant_id, 
+            **call_params
+        )
+        
+        # Convert result to dict if it's not already
+        if not isinstance(result, dict):
+            result = result.to_dict()
+            
+        # Get the list of items using the endpoint-specific key
+        items_key = endpoint_config['key']
+        items = result.get(items_key, [])
+        
+        if not items:
+            break
+            
+        all_items.extend(items)
+        logger.info(f"Retrieved page {page} for {api_call} with {len(items)} items")
+        
+        # Check if we got less than a full page
+        if len(items) < page_size:
+            break
+            
+        page += 1
+    
+    # Return combined result with all items
+    result[items_key] = all_items
+    logger.info(f"Total {len(all_items)} items retrieved for {api_call}")
+    return result
+
 def main():
     failed_calls = []
     successful_endpoints = {}
@@ -118,7 +195,7 @@ def main():
         token = token_manager.get_token()
         logger.debug(f"initial token: access_token={token['access_token'][:4]}..., expires_at={token['expires_at']}")
 
-        # initialize Configuration and OAuth2Token
+        # initialize configuration and OAuth2Token
         configuration = Configuration()
         oauth2_token = OAuth2Token(
             client_id=token_manager.app_id,
@@ -187,9 +264,10 @@ def main():
             max_attempts = 2
             while attempt < max_attempts:
                 try:
-                    logger.info(f"calling {api_call}")
-                    func = getattr(accounting_api, api_call)
-                    result = rate_limited_api_call(func, xero_tenant_id=tenant_id, **params)
+                    logger.info(f"Calling {api_call}")
+                    
+                    # use pagination helper function
+                    result = get_paginated_data(accounting_api, api_call, tenant_id, params)
 
                     # convert result to dict if it's not already
                     if not isinstance(result, dict):
@@ -199,12 +277,13 @@ def main():
                     result['ingestion_time'] = datetime.utcnow().isoformat()
 
                     # save to GCS in NDJSON format
-                    endpoint_name = api_call.replace("get_", "") 
+                    endpoint_name = api_call.replace("get_", "")
                     save_to_gcs(result, endpoint_name)
 
                     logger.info(f"successfully processed and saved data from {api_call}")
-                    successful_endpoints[endpoint_name] = {}  # Add to successful endpoints
-                    break  # success, exit the retry loop
+                    successful_endpoints[endpoint_name] = {}
+                    break
+
                 except ApiException as e:
                     if e.status == 401 and 'tokenexpired' in e.body.decode('utf-8'):
                         logger.warning(f"unauthorized error for {api_call}, attempting to refresh token.")
@@ -221,15 +300,15 @@ def main():
                         except Exception as refresh_e:
                             logger.error(f"failed to refresh token for {api_call}: {refresh_e}")
                             failed_calls.append((api_call, str(e)))
-                            break  # stop retrying this API call
+                            break
                     else:
-                        logger.error(f"Error in {api_call}: {str(e)}")
+                        logger.error(f"error in {api_call}: {str(e)}")
                         failed_calls.append((api_call, str(e)))
-                        break  # stop retrying this API call
+                        break
                 except Exception as e:
                     logger.error(f"unexpected error in {api_call}: {str(e)}")
                     failed_calls.append((api_call, str(e)))
-                    break  # stop retrying this API call
+                    break
 
         # after all API calls, load data to BigQuery
         if successful_endpoints:
