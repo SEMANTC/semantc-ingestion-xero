@@ -124,7 +124,7 @@ def get_paginated_data(accounting_api, api_call, tenant_id, params):
         'get_prepayments': {'key': 'prepayments', 'params': ['page', 'page_size']},
         'get_payments': {'key': 'payments', 'params': ['page', 'page_size']},
         'get_overpayments': {'key': 'overpayments', 'params': ['page', 'page_size']},
-        'get_quotes': {'key': 'quotes', 'params': ['page', 'page_size']},
+        'get_quotes': {'key': 'quotes', 'params': ['page']},  # some endpoints only support 'page'
         'get_purchase_orders': {'key': 'purchase_orders', 'params': ['page', 'page_size']},
         'get_journals': {'key': 'journals', 'params': ['offset']},  # journals uses offset instead
     }
