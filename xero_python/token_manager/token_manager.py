@@ -3,11 +3,13 @@ import os
 import json
 import time
 import requests
-import jwt  # PyJWT library
-from threading import Lock
+import jwt
+import asyncio
+import aiohttp
 from google.cloud import firestore
 from google.cloud import secretmanager
 from cryptography.fernet import Fernet
+from google.cloud.firestore import AsyncClient
 
 from xero_python.exceptions import (
     SecretManagerError,
@@ -34,8 +36,8 @@ class FirestoreTokenManager:
             
         self.user_id = user_id
         self.tenant_id = None  # Will be populated when needed
-        self.lock = Lock()
-        self.db = firestore.Client()
+        self.lock = asyncio.Lock()  # Changed to asyncio.Lock
+        self.db = AsyncClient()  # Changed to AsyncClient
         self.sm_client = secretmanager.SecretManagerServiceClient()
         
         # Initialize encryption
@@ -87,7 +89,7 @@ class FirestoreTokenManager:
                   .collection('integrations')
                   .document('connectors'))
         
-        doc = await doc_ref.get()
+        doc = await doc_ref.get()  # Using async get
         if not doc.exists:
             raise TokenRetrievalError(f"No connector configuration found for user {self.user_id}")
             
@@ -202,32 +204,28 @@ class FirestoreTokenManager:
             "Content-Type": "application/x-www-form-urlencoded",
         }
         
-        try:
-            response = requests.post(
-                self.refresh_token_url,
-                data=post_data,
-                headers=headers,
-            )
-            
-            if response.status_code != 200:
-                raise TokenRetrievalError(
-                    f"Refresh token request failed with status {response.status_code}"
-                )
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.post(self.refresh_token_url, data=post_data, headers=headers) as response:
+                    if response.status != 200:
+                        raise TokenRetrievalError(
+                            f"Refresh token request failed with status {response.status}"
+                        )
 
-            new_tokens = response.json()
-            new_tokens['expires_at'] = self.parse_expiration(new_tokens['access_token'])
+                    new_tokens = await response.json()
+                    new_tokens['expires_at'] = self.parse_expiration(new_tokens['access_token'])
 
-            if 'refresh_token' not in new_tokens:
-                new_tokens['refresh_token'] = refresh_token
+                    if 'refresh_token' not in new_tokens:
+                        new_tokens['refresh_token'] = refresh_token
 
-            await self.store_tokens(new_tokens)
-            
-            logger.info(f"Token refreshed successfully for user {self.user_id}")
-            return new_tokens
-            
-        except requests.RequestException as e:
-            logger.error(f"Token refresh failed: {e}")
-            raise TokenRetrievalError(f"Token refresh failed: {e}") from e
+                    await self.store_tokens(new_tokens)
+                    
+                    logger.info(f"Token refreshed successfully for user {self.user_id}")
+                    return new_tokens
+                    
+            except aiohttp.ClientError as e:
+                logger.error(f"Token refresh failed: {e}")
+                raise TokenRetrievalError(f"Token refresh failed: {e}") from e
 
     async def get_token(self):
         """Main method to get a valid token, refreshing if necessary"""

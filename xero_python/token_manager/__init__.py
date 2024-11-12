@@ -1,4 +1,5 @@
 # flake8: noqa
 
-# import apis into api package
-from xero_python.token_manager.token_manager import FirestoreTokenManager
+from xero_python.token_manager.token_manager import FirestoreTokenManager, oauth2_token_getter
+
+__all__ = ['FirestoreTokenManager', 'oauth2_token_getter']

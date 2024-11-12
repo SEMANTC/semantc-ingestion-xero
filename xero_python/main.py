@@ -201,17 +201,17 @@ async def main():
         # get standardized resource names
         resource_names = get_resource_names(user_id)
         
-        # initialize firestoretokenmanager with user_id
+        # initialize FirestoreTokenManager with user_id
         token_manager = FirestoreTokenManager(user_id)
         
         # get initial token and tenant_id
         token = await token_manager.get_token()
         tenant_id = token_manager.tenant_id
 
-        # get client credentials from secret manager
+        # get client credentials from Secret Manager
         client_id, client_secret = await token_manager.get_client_credentials()
 
-        # initialize configuration and oauth2token
+        # initialize configuration and OAuth2Token
         configuration = Configuration()
         oauth2_token = OAuth2Token(
             client_id=client_id,
@@ -269,7 +269,7 @@ async def main():
             ('get_users', {})
         ]
 
-        # make API calls and save results
+        # Make API calls and save results
         for api_call, params in api_calls:
             attempt = 0
             max_attempts = 2
@@ -315,9 +315,14 @@ async def main():
                     failed_calls.append((api_call, str(e)))
                     break
 
-        # after all API calls, load data to BigQuery
+        # after all api calls, load data to bigquery
         if successful_endpoints:
-            create_external_table(successful_endpoints, dataset_id=resource_names['raw_dataset'])
+            create_external_table(
+                endpoints=successful_endpoints,
+                dataset_id=resource_names['raw_dataset'],
+                bucket_name=resource_names['gcs_bucket'],
+                project_id=os.getenv('PROJECT_ID')
+            )
 
             logger.info("triggering the data transformation job")
             transformation_triggered = trigger_transformation_job(resource_names['transformation_job_uri'])

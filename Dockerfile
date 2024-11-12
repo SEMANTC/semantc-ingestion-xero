@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libffi-dev \
     libssl-dev \
+    python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # copy and install python dependencies
@@ -34,14 +35,13 @@ RUN adduser --disabled-password appuser && \
 USER appuser
 
 # set environment variables (to be overridden at runtime)
-ENV TENANT_ID=""
+ENV USER_ID=""
 ENV PROJECT_ID=""
-# ENV GOOGLE_APPLICATION_CREDENTIALS="/service_account.json"
-
-# mount service account json (done at runtime)
+ENV TOKEN_ENCRYPTION_KEY=""
+ENV CLOUD_RUN_REGION="us-central1"
 
 # set work directory to where main.py is located
 WORKDIR /app/xero_python
 
-# Run the application
+# run the application
 CMD ["python", "-u", "main.py"]
