@@ -1,4 +1,3 @@
-# xero_python/token_manager/token_manager.py
 import os
 import json
 import time
@@ -6,10 +5,12 @@ import requests
 import jwt
 import asyncio
 import aiohttp
+import base64
 from google.cloud import firestore
 from google.cloud import secretmanager
-from cryptography.fernet import Fernet
-from google.cloud.firestore import AsyncClient
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from xero_python.exceptions import (
     SecretManagerError,
@@ -22,11 +23,80 @@ from xero_python.utils import get_logger
 
 logger = get_logger()
 
+class TokenEncryption:
+    """Handles encryption/decryption compatible with frontend Node.js implementation"""
+    IV_LENGTH = 12
+    AUTH_TAG_LENGTH = 16
+    KEY_LENGTH = 32
+
+    def __init__(self, encryption_key: str):
+        self.key = self._normalize_key(encryption_key)
+
+    def _normalize_key(self, key: str) -> bytes:
+        """Normalize key to exactly 32 bytes, matching Node.js implementation"""
+        try:
+            # Try base64 decode first
+            buffer = base64.b64decode(key)
+        except:
+            buffer = key.encode()
+
+        if len(buffer) < self.KEY_LENGTH:
+            # Pad if too short
+            buffer = buffer + os.urandom(self.KEY_LENGTH - len(buffer))
+        elif len(buffer) > self.KEY_LENGTH:
+            # Hash if too long
+            digest = hashes.Hash(hashes.SHA256())
+            digest.update(buffer)
+            buffer = digest.finalize()
+
+        return buffer
+
+    def decrypt(self, encrypted_data: str) -> str:
+        """Decrypt data using AES-256-GCM"""
+        try:
+            # Decode base64
+            buffer = base64.b64decode(encrypted_data)
+            
+            # Extract parts
+            iv = buffer[:self.IV_LENGTH]
+            auth_tag = buffer[-self.AUTH_TAG_LENGTH:]
+            ciphertext = buffer[self.IV_LENGTH:-self.AUTH_TAG_LENGTH]
+
+            # Create AESGCM cipher
+            aesgcm = AESGCM(self.key)
+            
+            # Decrypt
+            plaintext = aesgcm.decrypt(iv, ciphertext + auth_tag, None)
+            return plaintext.decode('utf-8')
+
+        except Exception as e:
+            logger.error(f"Decryption error: {str(e)}")
+            raise TokenRetrievalError(f"Failed to decrypt token: {str(e)}")
+
+    def encrypt(self, text: str) -> str:
+        """Encrypt data using AES-256-GCM"""
+        try:
+            # Generate random IV
+            iv = os.urandom(self.IV_LENGTH)
+            
+            # Create AESGCM cipher
+            aesgcm = AESGCM(self.key)
+            
+            # Encrypt
+            ciphertext = aesgcm.encrypt(iv, text.encode(), None)
+            
+            # Combine IV + ciphertext[:-16] + auth_tag[last 16 bytes]
+            combined = iv + ciphertext[:-self.AUTH_TAG_LENGTH] + ciphertext[-self.AUTH_TAG_LENGTH:]
+            
+            # Return base64 encoded result
+            return base64.b64encode(combined).decode('utf-8')
+
+        except Exception as e:
+            logger.error(f"Encryption error: {str(e)}")
+            raise TokenStorageError(f"Failed to encrypt token: {str(e)}")
+
 class FirestoreTokenManager:
-    """
-    Manages OAuth tokens using Firestore, while keeping client credentials in Secret Manager.
-    Retrieves tenant information and manages tokens for Xero integration.
-    """
+    """Manages OAuth tokens using Firestore and matches frontend encryption"""
     refresh_token_url = "https://identity.xero.com/connect/token"
     expiration_buffer = 60  # seconds
 
@@ -35,23 +105,22 @@ class FirestoreTokenManager:
             raise ValueError("user_id must be provided")
             
         self.user_id = user_id
-        self.tenant_id = None  # Will be populated when needed
-        self.lock = asyncio.Lock()  # Changed to asyncio.Lock
-        self.db = AsyncClient()  # Changed to AsyncClient
+        self.tenant_id = None
+        self.lock = asyncio.Lock()
+        self.db = firestore.AsyncClient()
         self.sm_client = secretmanager.SecretManagerServiceClient()
         
         # Initialize encryption
-        self.encryption_key = os.getenv('TOKEN_ENCRYPTION_KEY')
-        if not self.encryption_key:
+        encryption_key = os.getenv('TOKEN_ENCRYPTION_KEY')
+        if not encryption_key:
             raise ValueError("TOKEN_ENCRYPTION_KEY environment variable must be set")
-        self.fernet = Fernet(self.encryption_key.encode())
+        self.encryption = TokenEncryption(encryption_key)
         
         # Get project ID for Secret Manager
         self.project_id = os.getenv('PROJECT_ID')
         if not self.project_id:
             raise ValueError("PROJECT_ID environment variable must be set")
             
-        # Initialize client credentials as None - will be fetched when needed
         self.app_id = None
         self.app_secret = None
 
@@ -89,7 +158,7 @@ class FirestoreTokenManager:
                   .collection('integrations')
                   .document('connectors'))
         
-        doc = await doc_ref.get()  # Using async get
+        doc = await doc_ref.get()
         if not doc.exists:
             raise TokenRetrievalError(f"No connector configuration found for user {self.user_id}")
             
@@ -103,40 +172,37 @@ class FirestoreTokenManager:
         self.tenant_id = tenant_id
         return tenant_id
 
-    def _get_token_doc_ref(self):
-        """Gets reference to the token document in Firestore"""
-        if not self.tenant_id:
-            raise ValueError("tenant_id not initialized - call get_tenant_id() first")
-            
+    def _get_credentials_ref(self):
+        """Gets reference to the credentials document in Firestore"""
         return (self.db
                 .collection('users')
                 .document(self.user_id)
                 .collection('integrations')
-                .document('credentials')
-                .collection('xero')
-                .document(self.tenant_id))
+                .document('credentials'))
 
-    def _encrypt_tokens(self, tokens: dict) -> str:
-        """Encrypts token data before storing in Firestore"""
-        tokens_json = json.dumps(tokens)
-        encrypted_data = self.fernet.encrypt(tokens_json.encode())
-        return encrypted_data.decode()
+    def _decrypt_token(self, encrypted_token: str) -> str:
+        """Decrypts a single token"""
+        return self.encryption.decrypt(encrypted_token)
 
-    def _decrypt_tokens(self, encrypted_data: str) -> dict:
-        """Decrypts token data retrieved from Firestore"""
-        decrypted_data = self.fernet.decrypt(encrypted_data.encode())
-        return json.loads(decrypted_data)
+    def _encrypt_token(self, token: str) -> str:
+        """Encrypts a single token"""
+        return self.encryption.encrypt(token)
 
     async def store_tokens(self, tokens: dict):
-        """Stores encrypted tokens in Firestore"""
+        """Stores tokens in Firestore"""
         try:
-            encrypted_tokens = self._encrypt_tokens(tokens)
-            
-            doc_ref = self._get_token_doc_ref()
-            await doc_ref.set({
-                'encryptedData': encrypted_tokens,
+            # Encrypt tokens and prepare for storage
+            xero_data = {
+                'accessToken': self._encrypt_token(tokens['access_token']),
+                'refreshToken': self._encrypt_token(tokens['refresh_token']),
+                'scope': ' '.join(tokens['scope']) if isinstance(tokens['scope'], (list, tuple)) else tokens['scope'],
+                'tokenType': tokens['token_type'],
+                'expiresAt': tokens['expires_at'],
                 'lastUpdated': firestore.SERVER_TIMESTAMP
-            })
+            }
+            
+            doc_ref = self._get_credentials_ref()
+            await doc_ref.set({'xero': xero_data}, merge=True)
             
             logger.info(f"Stored refreshed tokens for user {self.user_id}")
         except Exception as e:
@@ -146,30 +212,33 @@ class FirestoreTokenManager:
     async def retrieve_tokens(self) -> dict:
         """Retrieves and decrypts tokens from Firestore"""
         try:
-            # Ensure we have the tenant_id
-            if not self.tenant_id:
-                await self.get_tenant_id()
-                
-            doc_ref = self._get_token_doc_ref()
+            doc_ref = self._get_credentials_ref()
             doc = await doc_ref.get()
             
             if not doc.exists:
-                raise TokenRetrievalError("No tokens found for this user/tenant")
+                raise TokenRetrievalError("No credentials document found")
                 
             data = doc.to_dict()
-            encrypted_tokens = data.get('encryptedData')
-            if not encrypted_tokens:
-                raise TokenRetrievalError("No encrypted token data found")
-                
-            tokens = self._decrypt_tokens(encrypted_tokens)
+            xero_data = data.get('xero', {})
             
-            required = {'access_token', 'refresh_token', 'expires_in', 'token_type', 'scope'}
-            if not required.issubset(tokens.keys()):
-                raise TokenRetrievalError("Incomplete token data")
+            if not xero_data:
+                raise TokenRetrievalError("No Xero token data found")
+
+            # Check required fields
+            required_fields = {'accessToken', 'refreshToken', 'scope', 'tokenType', 'expiresAt'}
+            if not all(field in xero_data for field in required_fields):
+                raise TokenRetrievalError("Incomplete token data in Firestore")
             
-            if 'expires_at' not in tokens:
-                tokens['expires_at'] = self.parse_expiration(tokens['access_token'])
-                
+            # Decrypt tokens and convert to OAuth format
+            tokens = {
+                'access_token': self._decrypt_token(xero_data['accessToken']),
+                'refresh_token': self._decrypt_token(xero_data['refreshToken']),
+                'scope': xero_data['scope'].split(' ') if isinstance(xero_data['scope'], str) else xero_data['scope'],
+                'token_type': xero_data['tokenType'],
+                'expires_at': xero_data['expiresAt'],
+                'expires_in': 1800  # Default 30 minutes
+            }
+            
             return tokens
             
         except Exception as e:
