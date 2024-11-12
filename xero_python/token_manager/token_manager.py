@@ -151,26 +151,42 @@ class FirestoreTokenManager:
         """Retrieves Xero tenant ID from Firestore connectors collection"""
         if self.tenant_id:
             return self.tenant_id
-            
-        doc_ref = (self.db
-                  .collection('users')
-                  .document(self.user_id)
-                  .collection('integrations')
-                  .document('connectors'))
         
-        doc = await doc_ref.get()
-        if not doc.exists:
-            raise TokenRetrievalError(f"No connector configuration found for user {self.user_id}")
+        try:
+            logger.info(f"Attempting to get tenant_id for user: {self.user_id}")
             
-        data = doc.to_dict()
-        xero_config = data.get('xero', {})
-        tenant_id = xero_config.get('tenantId')
-        
-        if not tenant_id:
-            raise TokenRetrievalError(f"No Xero tenant ID found for user {self.user_id}")
+            doc_ref = (self.db
+                    .collection('users')
+                    .document(self.user_id)
+                    .collection('integrations')
+                    .document('connectors'))
             
-        self.tenant_id = tenant_id
-        return tenant_id
+            logger.debug(f"Fetching document from: {doc_ref.path}")
+            doc = await doc_ref.get()
+            
+            if not doc.exists:
+                logger.error(f"No connector configuration found for user {self.user_id}")
+                raise TokenRetrievalError(f"No connector configuration found for user {self.user_id}")
+                
+            data = doc.to_dict()
+            logger.debug(f"Retrieved connector data: {data}")
+            
+            xero_config = data.get('xero', {})
+            logger.debug(f"Xero config: {xero_config}")
+            
+            tenant_id = xero_config.get('tenantId')
+            logger.info(f"Found tenant_id: {tenant_id}")
+            
+            if not tenant_id:
+                logger.error(f"No Xero tenant ID found for user {self.user_id}")
+                raise TokenRetrievalError(f"No Xero tenant ID found for user {self.user_id}")
+                
+            self.tenant_id = tenant_id
+            return tenant_id
+            
+        except Exception as e:
+            logger.error(f"Error retrieving tenant_id: {e}")
+            raise TokenRetrievalError(f"Error retrieving tenant_id: {e}")
 
     def _get_credentials_ref(self):
         """Gets reference to the credentials document in Firestore"""
@@ -299,6 +315,10 @@ class FirestoreTokenManager:
     async def get_token(self):
         """Main method to get a valid token, refreshing if necessary"""
         async with self.lock:
+            # Get tenant_id first
+            if not self.tenant_id:
+                await self.get_tenant_id()
+                
             tokens = await self.retrieve_tokens()
             current_time = time.time()
             expires_at = tokens.get('expires_at', 0)

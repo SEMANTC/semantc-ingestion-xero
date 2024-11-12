@@ -1,10 +1,10 @@
-# xero_python/main.py
 import os
 import json
 import re
 from decimal import Decimal
 from enum import Enum
 from datetime import datetime, date
+import asyncio
 from ratelimit import limits, sleep_and_retry
 from xero_python.accounting import AccountingApi
 from xero_python.api_client import ApiClient, Configuration
@@ -21,6 +21,13 @@ import requests
 from google.auth import default
 from google.auth.transport.requests import AuthorizedSession
 from token_manager import FirestoreTokenManager, oauth2_token_getter
+
+# Set up logging format
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 
 logger = logging.getLogger(__name__)
 
@@ -124,13 +131,15 @@ def get_paginated_data(accounting_api, api_call, tenant_id, params):
     Helper function to handle pagination for supported endpoints
     Returns combined results for paginated endpoints or single call results for non-paginated endpoints
     """
+    logger.debug(f"Making paginated call to {api_call} with tenant_id: {tenant_id}")
+    
     # Define endpoints that support pagination and their specific parameters
     paginated_endpoints = {
         'get_bank_transactions': {'key': 'bank_transactions', 'params': ['page', 'page_size']},
         'get_contacts': {'key': 'contacts', 'params': ['page', 'page_size']},
         'get_credit_notes': {'key': 'credit_notes', 'params': ['page', 'page_size']},
         'get_invoices': {'key': 'invoices', 'params': ['page', 'page_size']},
-        'get_linked_transactions': {'linked_transactions': 'linked', 'params': ['page', 'page_size']},
+        'get_linked_transactions': {'key': 'linked_transactions', 'params': ['page']},  # removed page_size
         'get_manual_journals': {'key': 'manual_journals', 'params': ['page', 'page_size']},
         'get_prepayments': {'key': 'prepayments', 'params': ['page', 'page_size']},
         'get_payments': {'key': 'payments', 'params': ['page', 'page_size']},
@@ -139,10 +148,15 @@ def get_paginated_data(accounting_api, api_call, tenant_id, params):
         'get_purchase_orders': {'key': 'purchase_orders', 'params': ['page', 'page_size']},
         'get_journals': {'key': 'journals', 'params': ['offset']},
     }
+
+    base_params = {'xero_tenant_id': tenant_id}  # Add tenant_id to base params
+    call_params = {**base_params, **params}  # Combine with other params
     
+    logger.debug(f"Call parameters for {api_call}: {call_params}")
+
     if api_call not in paginated_endpoints:
         func = getattr(accounting_api, api_call)
-        return rate_limited_api_call(func, xero_tenant_id=tenant_id, **params)
+        return rate_limited_api_call(func, **call_params)
         
     endpoint_config = paginated_endpoints[api_call]
     all_items = []
@@ -158,13 +172,14 @@ def get_paginated_data(accounting_api, api_call, tenant_id, params):
         if 'offset' in endpoint_config['params']:
             pagination_params['offset'] = (page - 1) * page_size
 
-        call_params = {**params, **pagination_params}
+        # Combine all parameters
+        current_call_params = {**call_params, **pagination_params}
         
+        logger.debug(f"Making API call to {api_call} with params: {current_call_params}")
         func = getattr(accounting_api, api_call)
         result = rate_limited_api_call(
             func, 
-            xero_tenant_id=tenant_id, 
-            **call_params
+            **current_call_params
         )
         
         if not isinstance(result, dict):
@@ -193,25 +208,32 @@ async def main():
     successful_endpoints = {}
 
     try:
-        # get user_id from environment
+        # Get user_id from environment
         user_id = os.getenv("USER_ID")
         if not user_id:
             raise ValueError("USER_ID environment variable must be set")
 
-        # get standardized resource names
+        logger.info(f"Starting ingestion for user_id: {user_id}")
+
+        # Get standardized resource names
         resource_names = get_resource_names(user_id)
         
-        # initialize FirestoreTokenManager with user_id
+        # Initialize FirestoreTokenManager with user_id
         token_manager = FirestoreTokenManager(user_id)
         
-        # get initial token and tenant_id
+        # Get initial token and tenant_id
         token = await token_manager.get_token()
         tenant_id = token_manager.tenant_id
 
-        # get client credentials from Secret Manager
-        client_id, client_secret = await token_manager.get_client_credentials()
+        logger.info(f"Retrieved tenant_id: {tenant_id}")
+        if not tenant_id:
+            raise ValueError("No tenant_id available from token manager")
 
-        # initialize configuration and OAuth2Token
+        # Get client credentials from Secret Manager
+        client_id, client_secret = await token_manager.get_client_credentials()
+        logger.info("Retrieved client credentials from Secret Manager")
+
+        # Initialize configuration and OAuth2Token
         configuration = Configuration()
         oauth2_token = OAuth2Token(
             client_id=client_id,
@@ -220,14 +242,21 @@ async def main():
         oauth2_token.update_token(**token)
         configuration.oauth2_token = oauth2_token
 
-        # initialize ApiClient
+        # Initialize ApiClient with synchronous token getter wrapper
         api_client = ApiClient(configuration=configuration)
-        api_client.oauth2_token_getter(lambda: oauth2_token_getter(user_id))
+        def token_getter():
+            # Store the initial token we already have
+            return token  # Use the token we already retrieved earlier
 
-        # initialize AccountingApi
+        # Set the token getter
+        api_client.oauth2_token_getter(token_getter)
+
+        # Initialize AccountingApi
         accounting_api = AccountingApi(api_client=api_client)
 
-        # list of API calls to make
+        logger.info(f"Making API calls with tenant_id: {tenant_id}")
+
+        # List of API calls to make
         api_calls = [
             ('get_accounts', {}),
             ('get_bank_transactions', {}),
@@ -287,35 +316,36 @@ async def main():
                     endpoint_name = api_call.replace("get_", "")
                     save_to_gcs(result, endpoint_name, resource_names['gcs_bucket'])
 
-                    logger.info(f"successfully processed and saved data from {api_call}")
+                    logger.info(f"Successfully processed and saved data from {api_call}")
                     successful_endpoints[endpoint_name] = {}
                     break
 
                 except ApiException as e:
                     if e.status == 401 and 'tokenexpired' in e.body.decode('utf-8'):
-                        logger.warning(f"unauthorized error for {api_call}, attempting to refresh token.")
+                        logger.warning(f"Unauthorized error for {api_call}, attempting to refresh token")
                         try:
-                            # force token refresh
+                            # Force token refresh
                             new_token = await token_manager.get_token()  # This will refresh if needed
                             oauth2_token.update_token(**new_token)
                             configuration.oauth2_token = oauth2_token
-                            token = new_token
+                            token = new_token  # Update our stored token
+                            api_client.oauth2_token_getter(lambda: token)  # Update the token getter with new token
                             attempt += 1
-                            logger.info(f"token refreshed... retrying {api_call} (Attempt {attempt}/{max_attempts})")
+                            logger.info(f"Token refreshed... retrying {api_call} (Attempt {attempt}/{max_attempts})")
                         except Exception as refresh_e:
-                            logger.error(f"failed to refresh token for {api_call}: {refresh_e}")
+                            logger.error(f"Failed to refresh token for {api_call}: {refresh_e}")
                             failed_calls.append((api_call, str(e)))
                             break
                     else:
-                        logger.error(f"error in {api_call}: {str(e)}")
+                        logger.error(f"Error in {api_call}: {str(e)}")
                         failed_calls.append((api_call, str(e)))
                         break
                 except Exception as e:
-                    logger.error(f"unexpected error in {api_call}: {str(e)}")
+                    logger.error(f"Unexpected error in {api_call}: {str(e)}")
                     failed_calls.append((api_call, str(e)))
                     break
 
-        # after all api calls, load data to bigquery
+        # After all API calls, load data to BigQuery
         if successful_endpoints:
             create_external_table(
                 endpoints=successful_endpoints,
@@ -324,29 +354,36 @@ async def main():
                 project_id=os.getenv('PROJECT_ID')
             )
 
-            logger.info("triggering the data transformation job")
+            logger.info("Triggering the data transformation job")
             transformation_triggered = trigger_transformation_job(resource_names['transformation_job_uri'])
             if transformation_triggered:
-                logger.info("data transformation job has been triggered successfully")
+                logger.info("Data transformation job has been triggered successfully")
             else:
-                logger.error("failed to trigger the data transformation job")
+                logger.error("Failed to trigger the data transformation job")
 
     except OAuth2TokenGetterError as e:
-        logger.error(f"error getting token: {e}")
+        logger.error(f"Error getting token: {e}")
     except OAuth2TokenSaverError as e:
-        logger.error(f"error saving token: {e}")
+        logger.error(f"Error saving token: {e}")
     except Exception as e:
-        logger.error(f"error: {e}")
+        logger.error(f"Error: {e}")
         if hasattr(e, 'body'):
-            logger.error(f"response body: {e.body}")
+            logger.error(f"Response body: {e.body}")
     finally:
         if failed_calls:
-            logger.warning(f"completed with failures in {len(failed_calls)} API calls:")
+            logger.warning(f"Completed with failures in {len(failed_calls)} API calls:")
             for call, error in failed_calls:
                 logger.warning(f"- {call}: {error}")
         else:
-            logger.info("all API calls completed successfully")
+            logger.info("All API calls completed successfully")
 
 if __name__ == "__main__":
-    import asyncio
+    # Set up logging configuration
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s %(levelname)s %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Run the async main function
     asyncio.run(main())
