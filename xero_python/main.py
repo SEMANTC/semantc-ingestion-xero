@@ -1,5 +1,7 @@
+# xero_python/main.py
 import os
 import json
+import re
 from decimal import Decimal
 from enum import Enum
 from datetime import datetime, date
@@ -7,7 +9,6 @@ from ratelimit import limits, sleep_and_retry
 from xero_python.accounting import AccountingApi
 from xero_python.api_client import ApiClient, Configuration
 from xero_python.api_client.oauth2 import OAuth2Token
-from xero_python.token_manager.token_manager import TokenManager, oauth2_token_getter
 from xero_python.exceptions import (
     OAuth2TokenGetterError,
     OAuth2TokenSaverError,
@@ -19,11 +20,26 @@ import logging
 import requests
 from google.auth import default
 from google.auth.transport.requests import AuthorizedSession
+from token_manager import FirestoreTokenManager, oauth2_token_getter
 
 logger = logging.getLogger(__name__)
 
 RATE_LIMIT_CALLS = 60
 RATE_LIMIT_PERIOD = 50  # seconds
+
+def standardize_user_id(user_id: str) -> str:
+    """Standardizes user ID for GCP resource naming"""
+    return re.sub(r'[^a-zA-Z0-9]', '', user_id[:8]).lower()
+
+def get_resource_names(user_id: str) -> dict:
+    """Get standardized resource names for a user"""
+    std_id = standardize_user_id(user_id)
+    return {
+        'gcs_bucket': f"user-{std_id}-xero",
+        'transformation_job_uri': f"https://{os.getenv('CLOUD_RUN_REGION', 'us-central1')}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/{os.getenv('PROJECT_ID')}/jobs/job-{std_id}-xero-trn:run",
+        'raw_dataset': f"user_{std_id}_raw",
+        'transformed_dataset': f"user_{std_id}_transformed"
+    }
 
 @sleep_and_retry
 @limits(calls=RATE_LIMIT_CALLS, period=RATE_LIMIT_PERIOD)
@@ -40,7 +56,7 @@ def json_serializer(obj):
     else:
         return str(obj)
 
-def save_to_gcs(data, endpoint_name):
+def save_to_gcs(data, endpoint_name, gcs_bucket_name):
     """
     converts API response data into NDJSON format and uploads to GCS
     each line contains a JSON object with 'payload' and 'ingestion_time'
@@ -72,30 +88,25 @@ def save_to_gcs(data, endpoint_name):
             lines.append(serialized_record)
         except TypeError as te:
             logger.error(f"serialization error for {endpoint_name}: {te}")
-            continue  # skip this record and continue with others
+            continue
 
-    # join all JSON objects with newline characters
     json_content = "\n".join(lines)
 
-    # save to GCS
-    write_json_to_gcs(file_name, json_content)
-    logger.info(f"saved xero_{endpoint_name}.json to gs://{os.getenv('GCS_BUCKET_NAME')}/{file_name}")
+    # save to GCS using provided bucket name
+    write_json_to_gcs(file_name, json_content, bucket_name=gcs_bucket_name)
+    logger.info(f"saved xero_{endpoint_name}.json to gs://{gcs_bucket_name}/{file_name}")
 
-def trigger_transformation_job():
+def trigger_transformation_job(transformation_job_uri: str):
     """
     triggers the data transformation Cloud Run job by making an authenticated HTTP POST request
     """
-    transformation_job_uri = os.getenv("TRANSFORMATION_JOB_URI")
     if not transformation_job_uri:
-        logger.error("TRANSFORMATION_JOB_URI environment variable is not set.")
+        logger.error("transformation_job_uri not provided")
         return False
 
     try:
-        # obtain default credentials
         credentials, _ = default()
         authed_session = AuthorizedSession(credentials)
-
-        # make the POST request to trigger the transformation job
         response = authed_session.post(transformation_job_uri)
 
         if response.status_code in [200, 202]:
@@ -124,24 +135,21 @@ def get_paginated_data(accounting_api, api_call, tenant_id, params):
         'get_prepayments': {'key': 'prepayments', 'params': ['page', 'page_size']},
         'get_payments': {'key': 'payments', 'params': ['page', 'page_size']},
         'get_overpayments': {'key': 'overpayments', 'params': ['page', 'page_size']},
-        'get_quotes': {'key': 'quotes', 'params': ['page']},  # some endpoints only support 'page'
+        'get_quotes': {'key': 'quotes', 'params': ['page']},
         'get_purchase_orders': {'key': 'purchase_orders', 'params': ['page', 'page_size']},
-        'get_journals': {'key': 'journals', 'params': ['offset']},  # journals uses offset instead
+        'get_journals': {'key': 'journals', 'params': ['offset']},
     }
     
     if api_call not in paginated_endpoints:
-        # For non-paginated endpoints, just make a single call
         func = getattr(accounting_api, api_call)
         return rate_limited_api_call(func, xero_tenant_id=tenant_id, **params)
         
-    # For paginated endpoints
     endpoint_config = paginated_endpoints[api_call]
     all_items = []
     page = 1
-    page_size = 100  # Maximum page size
+    page_size = 100
     
     while True:
-        # Prepare pagination parameters based on endpoint configuration
         pagination_params = {}
         if 'page' in endpoint_config['params']:
             pagination_params['page'] = page
@@ -150,7 +158,6 @@ def get_paginated_data(accounting_api, api_call, tenant_id, params):
         if 'offset' in endpoint_config['params']:
             pagination_params['offset'] = (page - 1) * page_size
 
-        # Combine with other parameters
         call_params = {**params, **pagination_params}
         
         func = getattr(accounting_api, api_call)
@@ -160,11 +167,9 @@ def get_paginated_data(accounting_api, api_call, tenant_id, params):
             **call_params
         )
         
-        # Convert result to dict if it's not already
         if not isinstance(result, dict):
             result = result.to_dict()
             
-        # Get the list of items using the endpoint-specific key
         items_key = endpoint_config['key']
         items = result.get(items_key, [])
         
@@ -174,47 +179,53 @@ def get_paginated_data(accounting_api, api_call, tenant_id, params):
         all_items.extend(items)
         logger.info(f"Retrieved page {page} for {api_call} with {len(items)} items")
         
-        # Check if we got less than a full page
         if len(items) < page_size:
             break
             
         page += 1
     
-    # Return combined result with all items
     result[items_key] = all_items
     logger.info(f"Total {len(all_items)} items retrieved for {api_call}")
     return result
 
-def main():
+async def main():
     failed_calls = []
     successful_endpoints = {}
 
     try:
-        # initialize TokenManager and get token
-        token_manager = TokenManager()
-        token = token_manager.get_token()
-        logger.debug(f"initial token: access_token={token['access_token'][:4]}..., expires_at={token['expires_at']}")
+        # get user_id from environment
+        user_id = os.getenv("USER_ID")
+        if not user_id:
+            raise ValueError("USER_ID environment variable must be set")
 
-        # initialize configuration and OAuth2Token
+        # get standardized resource names
+        resource_names = get_resource_names(user_id)
+        
+        # initialize firestoretokenmanager with user_id
+        token_manager = FirestoreTokenManager(user_id)
+        
+        # get initial token and tenant_id
+        token = await token_manager.get_token()
+        tenant_id = token_manager.tenant_id
+
+        # get client credentials from secret manager
+        client_id, client_secret = await token_manager.get_client_credentials()
+
+        # initialize configuration and oauth2token
         configuration = Configuration()
         oauth2_token = OAuth2Token(
-            client_id=token_manager.app_id,
-            client_secret=token_manager.app_secret
+            client_id=client_id,
+            client_secret=client_secret
         )
         oauth2_token.update_token(**token)
         configuration.oauth2_token = oauth2_token
 
         # initialize ApiClient
         api_client = ApiClient(configuration=configuration)
-        api_client.oauth2_token_getter(oauth2_token_getter)
+        api_client.oauth2_token_getter(lambda: oauth2_token_getter(user_id))
 
         # initialize AccountingApi
         accounting_api = AccountingApi(api_client=api_client)
-
-        # retrieve tenant_id
-        tenant_id = os.getenv("TENANT_ID")
-        if not tenant_id:
-            raise ValueError("TENANT_ID environment variable must be set.")
 
         # list of API calls to make
         api_calls = [
@@ -266,19 +277,15 @@ def main():
                 try:
                     logger.info(f"Calling {api_call}")
                     
-                    # use pagination helper function
                     result = get_paginated_data(accounting_api, api_call, tenant_id, params)
 
-                    # convert result to dict if it's not already
                     if not isinstance(result, dict):
                         result = result.to_dict()
 
-                    # add ingestion time
                     result['ingestion_time'] = datetime.utcnow().isoformat()
 
-                    # save to GCS in NDJSON format
                     endpoint_name = api_call.replace("get_", "")
-                    save_to_gcs(result, endpoint_name)
+                    save_to_gcs(result, endpoint_name, resource_names['gcs_bucket'])
 
                     logger.info(f"successfully processed and saved data from {api_call}")
                     successful_endpoints[endpoint_name] = {}
@@ -288,13 +295,11 @@ def main():
                     if e.status == 401 and 'tokenexpired' in e.body.decode('utf-8'):
                         logger.warning(f"unauthorized error for {api_call}, attempting to refresh token.")
                         try:
-                            # force TokenManager to refresh token
-                            new_tokens = token_manager.refresh_token(token['refresh_token'], token['scope'])
-                            # update OAuth2Token with new token
-                            oauth2_token.update_token(**new_tokens)
-                            # update the ApiClient with new token
+                            # force token refresh
+                            new_token = await token_manager.get_token()  # This will refresh if needed
+                            oauth2_token.update_token(**new_token)
                             configuration.oauth2_token = oauth2_token
-                            token = new_tokens
+                            token = new_token
                             attempt += 1
                             logger.info(f"token refreshed... retrying {api_call} (Attempt {attempt}/{max_attempts})")
                         except Exception as refresh_e:
@@ -312,11 +317,10 @@ def main():
 
         # after all API calls, load data to BigQuery
         if successful_endpoints:
-            create_external_table(successful_endpoints)
+            create_external_table(successful_endpoints, dataset_id=resource_names['raw_dataset'])
 
-            # trigger the transformation job after successful ingestion
             logger.info("triggering the data transformation job")
-            transformation_triggered = trigger_transformation_job()
+            transformation_triggered = trigger_transformation_job(resource_names['transformation_job_uri'])
             if transformation_triggered:
                 logger.info("data transformation job has been triggered successfully")
             else:
@@ -339,4 +343,5 @@ def main():
             logger.info("all API calls completed successfully")
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())

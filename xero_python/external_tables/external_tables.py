@@ -1,25 +1,36 @@
-import os
+# xero_python/external_tables/external_tables.py
 from google.cloud import bigquery
 from google.cloud import storage
 from xero_python.utils import get_logger
 
 logger = get_logger()
 
-bigquery_client = bigquery.Client(project=os.getenv("PROJECT_ID"))
-
-project_id = os.getenv("PROJECT_ID")
-tenant_id = os.getenv("TENANT_ID")
-
-formatted_tenant_id = tenant_id.replace("-", "_")
-bucket_name = f"tenant-{tenant_id}-bucket-xero"
-dataset_id = f"tenant_{formatted_tenant_id}_raw"
-
-def create_external_table(endpoints: dict) -> None:
+def create_external_table(endpoints: dict, dataset_id: str, project_id: str = None) -> None:
+    """
+    Create BigQuery external tables for Xero data
+    
+    Args:
+        endpoints (dict): Dictionary of endpoints to create tables for
+        dataset_id (str): BigQuery dataset ID (e.g., "user_baph1db9_raw")
+        project_id (str, optional): GCP project ID. If not provided, uses default client project
+    
+    Raises:
+        Exception: If dataset access or table creation fails
+    """
+    # initialize BigQuery client with optional project_id
+    bigquery_client = bigquery.Client(project=project_id) if project_id else bigquery.Client()
+    
+    # ensure dataset exists
     try:
         bigquery_client.get_dataset(dataset_id)
     except Exception as e:
         logger.error(f"error accessing dataset {dataset_id}: {str(e)}")
         raise
+
+    # extract bucket name from the dataset_id
+    # assuming dataset_id format: "user_baph1db9_raw"
+    # convert to bucket format: "user-baph1db9-xero"
+    bucket_name = f"user-{dataset_id.split('_')[1]}-xero"
 
     for endpoint in endpoints.keys():
         table_id = f"{dataset_id}.xero_{endpoint}"
