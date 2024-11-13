@@ -9,15 +9,15 @@ storage_client = storage.Client()
 
 def write_json_to_gcs(file_name: str, content: str, bucket_name: str) -> None:
     """
-    Write JSON content to Google Cloud Storage
+    WRITE JSON CONTENT TO GOOGLE CLOUD STORAGE
     
-    Args:
-        file_name (str): Name of the file to write
-        content (str): JSON content to write
-        bucket_name (str): Name of the GCS bucket (e.g., "user-baph1db9-xero")
+    ARGS:
+        file_name (str): name of the file to write
+        content (str): json content to write
+        bucket_name (str): name of the gcs bucket (e.g., "user-baph1db9-xero")
     
-    Raises:
-        Exception: If upload fails
+    RAISES:
+        EXCEPTION: IF UPLOAD FAILS
     """
     try:
         bucket = storage_client.bucket(bucket_name)
