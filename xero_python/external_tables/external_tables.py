@@ -7,7 +7,7 @@ logger = get_logger()
 
 def create_external_table(endpoints: dict, dataset_id: str, bucket_name: str, project_id: str = None) -> None:
     """
-    Create BigQuery external tables for Xero data
+    CREATE BIGQUERY EXTERNAL TABLES FOR XERO DATA IN A TERRAFORM-MANAGED DATASET
     
     Args:
         endpoints (dict): Dictionary of endpoints to create tables for
@@ -18,42 +18,46 @@ def create_external_table(endpoints: dict, dataset_id: str, bucket_name: str, pr
     Raises:
         Exception: If dataset access or table creation fails
     """
-    # initialize BigQuery client with optional project_id
+    # Initialize BigQuery client with optional project_id
     bigquery_client = bigquery.Client(project=project_id) if project_id else bigquery.Client()
     
-    # ensure dataset exists
+    # Verify dataset exists (managed by Terraform)
     try:
-        bigquery_client.get_dataset(dataset_id)
+        dataset_ref = bigquery_client.dataset(dataset_id)
+        dataset = bigquery_client.get_dataset(dataset_ref)
+        logger.info(f"Found dataset {dataset_id}")
     except Exception as e:
-        logger.error(f"error accessing dataset {dataset_id}: {str(e)}")
+        logger.error(f"Dataset {dataset_id} not found or not accessible: {str(e)}")
         raise
 
+    # Create external tables for each endpoint
     for endpoint in endpoints.keys():
         table_id = f"{dataset_id}.xero_{endpoint}"
+        logger.info(f"Setting up external table {table_id} for bucket path: gs://{bucket_name}/xero_{endpoint}.json")
 
-        # define external table schema with payload as json and ingestion_time
+        # Define external table schema with payload as JSON and ingestion_time
         schema = [
             bigquery.SchemaField("payload", "JSON", mode="NULLABLE"),
             bigquery.SchemaField("ingestion_time", "TIMESTAMP", mode="REQUIRED"),
         ]
 
-        table_ref = bigquery_client.dataset(dataset_id).table(f"xero_{endpoint}")
+        table_ref = dataset_ref.table(f"xero_{endpoint}")
 
-        # create external table configuration
+        # Create external table configuration
         external_config = bigquery.ExternalConfig("NEWLINE_DELIMITED_JSON")
         external_config.source_uris = [f"gs://{bucket_name}/xero_{endpoint}.json"]
         external_config.schema = schema
         external_config.ignore_unknown_values = True
         external_config.max_bad_records = 0
 
-        # Create or ensure external table exists
+        # Create or update external table
         try:
             table = bigquery.Table(table_ref, schema=schema)
             table.external_data_configuration = external_config
             table = bigquery_client.create_table(table, exists_ok=True)
-            logger.info(f"external table {table_id} created or updated")
+            logger.info(f"External table {table_id} created or updated")
         except Exception as e:
-            logger.error(f"error creating external table {table_id}: {str(e)}")
+            logger.error(f"Error creating external table {table_id}: {str(e)}", exc_info=True)
             continue
 
-        logger.info(f"external table {table_id} is set up to read from {external_config.source_uris[0]}")
+        logger.info(f"External table {table_id} is set up to read from {external_config.source_uris[0]}")
