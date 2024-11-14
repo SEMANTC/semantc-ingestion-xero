@@ -9,7 +9,7 @@ REPO="gcr.io"
 IMAGE_TAG="latest"
 IMAGE_NAME="${REPO}/${PROJECT_ID}/xero-ingestion:${IMAGE_TAG}"
 
-echo "Building and pushing image: ${IMAGE_NAME}"
+echo "building and pushing image: ${IMAGE_NAME}"
 
 # authenticate with gcp
 gcloud auth configure-docker gcr.io

@@ -43,10 +43,9 @@ def get_resource_names(user_id: str) -> dict:
     """GET STANDARDIZED RESOURCE NAMES FOR A USER"""
     std_id = standardize_user_id(user_id)
     return {
-        'gcs_bucket': f"user-{std_id}-xero",
-        'transformation_job_uri': f"https://{os.getenv('CLOUD_RUN_REGION', 'us-central1')}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/{os.getenv('PROJECT_ID')}/jobs/job-{std_id}-xero-trn:run",
-        'raw_dataset': f"user_{std_id}_raw",
-        'transformed_dataset': f"user_{std_id}_transformed"
+        'gcs_bucket': f"gcs-{std_id}-xero",
+        'transformation_job_uri': f"https://{os.getenv('CLOUD_RUN_REGION', 'us-central1')}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/{os.getenv('PROJECT_ID')}/jobs/job-{std_id}-xero-transformation:run",
+        'raw_dataset': f"bq_{std_id}_raw"
     }
 
 @sleep_and_retry

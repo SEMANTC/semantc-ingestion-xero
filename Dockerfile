@@ -37,7 +37,7 @@ USER appuser
 # set environment variables (to be overridden at runtime)
 ENV USER_ID=""
 ENV PROJECT_ID=""
-ENV TOKEN_ENCRYPTION_KEY=""
+ENV TOKEN_ENCRYPTION_KEY="MAiczyHlCQO8BQRyGXK+E8uLxb7L0Y+RB1OzShtkp+8="
 ENV CLOUD_RUN_REGION="us-central1"
 
 # set work directory to where main.py is located

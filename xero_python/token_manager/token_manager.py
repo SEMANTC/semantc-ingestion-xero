@@ -126,17 +126,17 @@ class FirestoreTokenManager:
         self.app_secret = None
 
     def get_secret(self, secret_id: str) -> str:
-        """retrieves a secret from Secret Manager"""
+        """RETRIEVES A SECRET FROM SECRET MANAGER"""
         try:
             name = f"projects/{self.project_id}/secrets/{secret_id}/versions/latest"
             response = self.sm_client.access_secret_version(name=name)
             return response.payload.data.decode('UTF-8')
         except Exception as e:
-            logger.error(f"Failed to access secret '{secret_id}': {e}")
-            raise SecretManagerError(f"Failed to access secret '{secret_id}'") from e
+            logger.error(f"failed to access secret '{secret_id}': {e}")
+            raise SecretManagerError(f"failed to access secret '{secret_id}'") from e
 
     async def get_client_credentials(self) -> tuple:
-        """gets Xero client credentials from Secret Manager"""
+        """GETS XERO CLIENT CREDENTIALS FROM SECRET MANAGER"""
         if self.app_id and self.app_secret:
             return self.app_id, self.app_secret
             
@@ -162,7 +162,7 @@ class FirestoreTokenManager:
                     .collection('integrations')
                     .document('connectors'))
             
-            logger.debug(f"Fetching document from: {doc_ref.path}")
+            logger.debug(f"fetching document from: {doc_ref.path}")
             doc = await doc_ref.get()
             
             if not doc.exists:
@@ -173,10 +173,10 @@ class FirestoreTokenManager:
             logger.debug(f"retrieved connector data: {data}")
             
             xero_config = data.get('xero', {})
-            logger.debug(f"Xero config: {xero_config}")
+            logger.debug(f"xero config: {xero_config}")
             
             tenant_id = xero_config.get('tenantId')
-            logger.info(f"Found tenant_id: {tenant_id}")
+            logger.info(f"found tenant_id: {tenant_id}")
             
             if not tenant_id:
                 logger.error(f"no Xero tenant ID found for user {self.user_id}")
@@ -263,7 +263,7 @@ class FirestoreTokenManager:
             raise TokenRetrievalError(f"error retrieving tokens: {e}") from e
 
     def parse_expiration(self, access_token: str) -> float:
-        """parses token expiration from JWT"""
+        """PARSES TOKEN EXPIRATION FROM JWT"""
         try:
             decoded = jwt.decode(access_token, options={"verify_signature": False})
             exp = decoded.get('exp')
@@ -274,7 +274,7 @@ class FirestoreTokenManager:
             raise TokenRetrievalError(f"Failed to decode access_token JWT: {e}") from e
 
     async def refresh_token(self, refresh_token: str, scope: str | list):
-        """refreshes the OAuth token"""
+        """REFRESHES THE OAUTH TOKEN"""
         client_id, client_secret = await self.get_client_credentials()
         
         post_data = {
