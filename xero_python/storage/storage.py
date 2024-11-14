@@ -1,4 +1,4 @@
-import os
+# xero_python/storage/storage.py
 from google.cloud import storage
 from xero_python.utils import get_logger
 
@@ -7,10 +7,18 @@ logger = get_logger()
 # initialize storage client
 storage_client = storage.Client()
 
-tenant_id = os.getenv("TENANT_ID")
-bucket_name = f"tenant-{tenant_id}-bucket-xero"
-
-def write_json_to_gcs(file_name: str, content: str) -> None:
+def write_json_to_gcs(file_name: str, content: str, bucket_name: str) -> None:
+    """
+    WRITE JSON CONTENT TO GOOGLE CLOUD STORAGE
+    
+    ARGS:
+        file_name (str): name of the file to write
+        content (str): json content to write
+        bucket_name (str): name of the gcs bucket (e.g., "user-baph1db9-xero")
+    
+    RAISES:
+        EXCEPTION: IF UPLOAD FAILS
+    """
     try:
         bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(file_name)
