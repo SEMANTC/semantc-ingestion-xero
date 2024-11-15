@@ -103,7 +103,7 @@ def save_to_gcs(data, endpoint_name, gcs_bucket_name):
     write_json_to_gcs(file_name, json_content, bucket_name=gcs_bucket_name)
     logger.info(f"saved xero_{endpoint_name}.json to gs://{gcs_bucket_name}/{file_name}")
 
-def trigger_transformation_job(transformation_job_uri: str):
+def trigger_transformation_job(transformation_job_uri: str, user_id: str):
     """
     TRIGGERS THE DATA TRANSFORMATION CLOUD RUN JOB BY MAKING AN AUTHENTICATED HTTP POST REQUEST
     """
@@ -112,18 +112,49 @@ def trigger_transformation_job(transformation_job_uri: str):
         return False
 
     try:
+        logger.info(f"attempting to trigger transformation job at: {transformation_job_uri}")
+        logger.info(f"with user_id: {user_id}")
+        
         credentials, _ = default()
         authed_session = AuthorizedSession(credentials)
-        response = authed_session.post(transformation_job_uri)
+        
+        # Correct format for Cloud Run Jobs API
+        request_body = {
+            "overrides": {
+                "containerOverrides": [
+                    {
+                        "env": [
+                            {
+                                "name": "USER_ID",
+                                "value": user_id
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+        
+        logger.info(f"sending POST request with body: {json.dumps(request_body)}")
+        
+        response = authed_session.post(
+            transformation_job_uri,
+            json=request_body,
+            headers={'Content-Type': 'application/json'}
+        )
 
-        if response.status_code in [200, 202]:
+        logger.info(f"received response status: {response.status_code}")
+        logger.info(f"response headers: {dict(response.headers)}")
+        logger.info(f"response body: {response.text}")
+
+        if response.status_code in [200, 201, 202]:
             logger.info("transformation job triggered successfully.")
             return True
         else:
-            logger.error(f"failed to trigger transformation job. status code: {response.status_code}, response: {response.text}")
+            logger.error(f"failed to trigger transformation job. status code: {response.status_code}")
+            logger.error(f"response body: {response.text}")
             return False
     except Exception as e:
-        logger.error(f"exception occurred while triggering transformation job: {e}")
+        logger.error(f"exception occurred while triggering transformation job: {str(e)}", exc_info=True)
         return False
 
 def get_paginated_data(accounting_api, api_call, tenant_id, params):
@@ -354,12 +385,19 @@ async def main():
                 project_id=os.getenv('PROJECT_ID')
             )
 
-            logger.info("triggering the data transformation job")
-            transformation_triggered = trigger_transformation_job(resource_names['transformation_job_uri'])
-            if transformation_triggered:
-                logger.info("data transformation job has been triggered successfully")
-            else:
-                logger.error("failed to trigger the data transformation job")
+            std_id = standardize_user_id(user_id)
+            logger.info(f"triggering the data transformation job with std_id: {std_id}")
+            try:
+                transformation_triggered = trigger_transformation_job(
+                    resource_names['transformation_job_uri'],
+                    std_id
+                )
+                if transformation_triggered:
+                    logger.info("data transformation job has been triggered successfully")
+                else:
+                    logger.error("failed to trigger the data transformation job")
+            except Exception as e:
+                logger.error(f"error triggering transformation job: {str(e)}", exc_info=True)
 
     except OAuth2TokenGetterError as e:
         logger.error(f"error getting token: {e}")
